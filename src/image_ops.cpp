@@ -1026,6 +1026,51 @@ Image morph_close(const Image& image, StructuringElement element, int iterations
 }
 
 // ---------------------------------------------------------------------------
+// Movement limit enforcement
+// ---------------------------------------------------------------------------
+
+MovementLimitResult check_movement_limit(
+    std::int32_t original_x, std::int32_t original_y,
+    std::int32_t placed_x, std::int32_t placed_y,
+    const MovementLimitConfig& config,
+    double dpi_x, double dpi_y) {
+
+    MovementLimitResult result;
+    result.original_dx = placed_x - original_x;
+    result.original_dy = placed_y - original_y;
+    result.dx = result.original_dx;
+    result.dy = result.original_dy;
+
+    if (!config.enabled) {
+        return result;
+    }
+
+    result.max_dx = static_cast<std::int32_t>(std::round(to_pixels(config.max_horizontal, dpi_x)));
+    result.max_dy = static_cast<std::int32_t>(std::round(to_pixels(config.max_vertical, dpi_y)));
+
+    bool clamped = false;
+
+    if (result.dx > result.max_dx) {
+        result.dx = result.max_dx;
+        clamped = true;
+    } else if (result.dx < -result.max_dx) {
+        result.dx = -result.max_dx;
+        clamped = true;
+    }
+
+    if (result.dy > result.max_dy) {
+        result.dy = result.max_dy;
+        clamped = true;
+    } else if (result.dy < -result.max_dy) {
+        result.dy = -result.max_dy;
+        clamped = true;
+    }
+
+    result.clamped = clamped;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Color dropout
 // ---------------------------------------------------------------------------
 

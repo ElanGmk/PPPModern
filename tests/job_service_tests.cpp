@@ -4750,6 +4750,151 @@ bool test_pipeline_blank_page_step() {
 }
 
 // ---------------------------------------------------------------------------
+// Movement limit tests
+// ---------------------------------------------------------------------------
+
+bool test_movement_limit_within() {
+    using namespace ppp::core;
+
+    MovementLimitConfig config;
+    config.enabled = true;
+    config.max_horizontal = {2.0, MeasurementUnit::Inches};
+    config.max_vertical = {2.0, MeasurementUnit::Inches};
+
+    // Content moved 100px at 300 DPI = 0.33 inches — within limit.
+    auto result = ops::check_movement_limit(50, 50, 150, 150, config, 300.0, 300.0);
+
+    if (result.clamped) {
+        std::cerr << "movement_limit within: should not be clamped" << std::endl;
+        return false;
+    }
+    if (result.dx != 100 || result.dy != 100) {
+        std::cerr << "movement_limit within: wrong dx/dy" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_movement_limit_clamped() {
+    using namespace ppp::core;
+
+    MovementLimitConfig config;
+    config.enabled = true;
+    config.max_horizontal = {0.5, MeasurementUnit::Inches};  // 150px at 300 DPI.
+    config.max_vertical = {0.5, MeasurementUnit::Inches};
+
+    // Content moved 300px at 300 DPI = 1.0 inches — exceeds 0.5 limit.
+    auto result = ops::check_movement_limit(50, 50, 350, 350, config, 300.0, 300.0);
+
+    if (!result.clamped) {
+        std::cerr << "movement_limit clamped: should be clamped" << std::endl;
+        return false;
+    }
+    // max_dx = 0.5 * 300 = 150.
+    if (result.dx != 150 || result.dy != 150) {
+        std::cerr << "movement_limit clamped: dx=" << result.dx
+                  << " dy=" << result.dy << " (expected 150)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_movement_limit_negative() {
+    using namespace ppp::core;
+
+    MovementLimitConfig config;
+    config.enabled = true;
+    config.max_horizontal = {1.0, MeasurementUnit::Inches};
+    config.max_vertical = {1.0, MeasurementUnit::Inches};
+
+    // Content moved -500px at 300 DPI = -1.67 inches — exceeds 1.0 limit.
+    auto result = ops::check_movement_limit(500, 500, 0, 0, config, 300.0, 300.0);
+
+    if (!result.clamped) {
+        std::cerr << "movement_limit negative: should be clamped" << std::endl;
+        return false;
+    }
+    // max_dx = 1.0 * 300 = 300, so dx clamped to -300.
+    if (result.dx != -300 || result.dy != -300) {
+        std::cerr << "movement_limit negative: dx=" << result.dx
+                  << " dy=" << result.dy << " (expected -300)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_movement_limit_disabled() {
+    using namespace ppp::core;
+
+    MovementLimitConfig config;
+    config.enabled = false;
+
+    auto result = ops::check_movement_limit(0, 0, 9999, 9999, config, 300.0, 300.0);
+
+    if (result.clamped) {
+        std::cerr << "movement_limit disabled: should not be clamped" << std::endl;
+        return false;
+    }
+    if (result.dx != 9999 || result.dy != 9999) {
+        std::cerr << "movement_limit disabled: displacement should be unchanged" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_movement_limit_pipeline() {
+    using namespace ppp::core;
+
+    // Create image with content in upper-left corner.
+    Image img(300, 300, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    for (int y = 10; y < 30; ++y)
+        for (int x = 10; x < 100; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    ProcessingProfile profile;
+    profile.position_image = true;
+    profile.canvas.preset = CanvasPreset::Custom;
+    profile.canvas.width = {1.0, MeasurementUnit::Inches};
+    profile.canvas.height = {1.0, MeasurementUnit::Inches};
+    // Set large top margin to force big displacement.
+    profile.margins[0].top.distance = {0.8, MeasurementUnit::Inches};
+    profile.margins[0].top.mode = MarginMode::Set;
+    // Enable movement limit to clamp it.
+    profile.movement_limit.enabled = true;
+    profile.movement_limit.max_vertical = {0.2, MeasurementUnit::Inches};
+    profile.movement_limit.max_horizontal = {0.2, MeasurementUnit::Inches};
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) {
+        std::cerr << "movement_limit pipeline: " << result.error << std::endl;
+        return false;
+    }
+
+    // Check that movement_limit step exists and was applied.
+    bool found = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "movement_limit") {
+            found = true;
+            if (!s.applied) {
+                std::cerr << "movement_limit pipeline: should have clamped" << std::endl;
+                return false;
+            }
+        }
+    }
+    if (!found) {
+        std::cerr << "movement_limit pipeline: step not found" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Enum from_string round-trip tests
 // ---------------------------------------------------------------------------
 
@@ -5779,6 +5924,11 @@ int main() {
         {"blank_page_edge_margin", test_blank_page_edge_margin},
         {"blank_page_gray_input", test_blank_page_gray_input},
         {"pipeline_blank_page_step", test_pipeline_blank_page_step},
+        {"movement_limit_within", test_movement_limit_within},
+        {"movement_limit_clamped", test_movement_limit_clamped},
+        {"movement_limit_negative", test_movement_limit_negative},
+        {"movement_limit_disabled", test_movement_limit_disabled},
+        {"movement_limit_pipeline", test_movement_limit_pipeline},
         {"enum_from_string_roundtrips", test_enum_from_string_roundtrips},
         {"blank_page_config_json_roundtrip", test_blank_page_config_json_roundtrip},
         {"bmp_write_read_gray8", test_bmp_write_read_gray8},

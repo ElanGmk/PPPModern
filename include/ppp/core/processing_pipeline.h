@@ -56,6 +56,7 @@ struct ProcessingResult {
 ///   8.  Blank page detection
 ///   9.  Canvas resolution
 ///   10. Margin application / content positioning
+///   10b. Movement limit enforcement
 ///   11. Resize
 ///
 /// @param image    Source image to process.

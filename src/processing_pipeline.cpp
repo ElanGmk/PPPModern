@@ -309,6 +309,47 @@ ProcessingResult run_pipeline(const Image& image,
         img, result.subimage_bounds, profile, page_index,
         result.canvas, content_rect));
 
+    // 9b. Movement limit enforcement.
+    if (profile.movement_limit.enabled && !content_rect.empty()) {
+        auto ml = ops::check_movement_limit(
+            result.subimage_bounds.left, result.subimage_bounds.top,
+            content_rect.left, content_rect.top,
+            profile.movement_limit,
+            img.dpi_x(), img.dpi_y());
+
+        ProcessingStep step{"movement_limit", ml.clamped, ""};
+        std::ostringstream oss;
+        if (ml.clamped) {
+            // Re-position: shift content back to clamped displacement.
+            auto shift_x = ml.dx - ml.original_dx;
+            auto shift_y = ml.dy - ml.original_dy;
+
+            // Create new canvas and re-blit with adjusted position.
+            Image reimg(img.width(), img.height(), img.format(),
+                        img.dpi_x(), img.dpi_y());
+            if (img.format() != PixelFormat::BW1) {
+                reimg.fill(0xFF);
+            }
+            reimg.blit(img, shift_x, shift_y);
+            img = std::move(reimg);
+
+            content_rect.left += shift_x;
+            content_rect.right += shift_x;
+            content_rect.top += shift_y;
+            content_rect.bottom += shift_y;
+
+            oss << "clamped displacement from ("
+                << ml.original_dx << "," << ml.original_dy << ") to ("
+                << ml.dx << "," << ml.dy << "), max=("
+                << ml.max_dx << "," << ml.max_dy << ")";
+        } else {
+            oss << "within limits (" << ml.original_dx << "," << ml.original_dy
+                << "), max=(" << ml.max_dx << "," << ml.max_dy << ")";
+        }
+        step.detail = oss.str();
+        result.steps.push_back(step);
+    }
+
     // 10. Resize.
     if (profile.resize.enabled) {
         ProcessingStep step{"resize", false, ""};

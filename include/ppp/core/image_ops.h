@@ -319,6 +319,41 @@ void erode(Image& image, StructuringElement element = StructuringElement::Square
                                  int iterations = 1);
 
 // ---------------------------------------------------------------------------
+// Movement limit enforcement
+// ---------------------------------------------------------------------------
+
+/// Result of movement limit check.
+struct MovementLimitResult {
+    bool clamped{false};           ///< Whether the displacement was clamped.
+    std::int32_t dx{0};            ///< Actual horizontal displacement (pixels).
+    std::int32_t dy{0};            ///< Actual vertical displacement (pixels).
+    std::int32_t max_dx{0};        ///< Maximum allowed horizontal displacement.
+    std::int32_t max_dy{0};        ///< Maximum allowed vertical displacement.
+    std::int32_t original_dx{0};   ///< Original displacement before clamping.
+    std::int32_t original_dy{0};   ///< Original displacement before clamping.
+};
+
+/// Check and clamp content displacement against movement limits.
+///
+/// Compares the displacement of content from its original position to the
+/// configured maximum movement.  If the displacement exceeds the limit,
+/// it is clamped.
+///
+/// @param original_x   Original content X position (in source image).
+/// @param original_y   Original content Y position (in source image).
+/// @param placed_x     Placed content X position (after margins).
+/// @param placed_y     Placed content Y position (after margins).
+/// @param config       Movement limit configuration.
+/// @param dpi_x        Horizontal DPI for unit conversion.
+/// @param dpi_y        Vertical DPI for unit conversion.
+/// @return Result with clamped displacement and whether clamping occurred.
+[[nodiscard]] MovementLimitResult check_movement_limit(
+    std::int32_t original_x, std::int32_t original_y,
+    std::int32_t placed_x, std::int32_t placed_y,
+    const MovementLimitConfig& config,
+    double dpi_x, double dpi_y);
+
+// ---------------------------------------------------------------------------
 // Color dropout — remove a color channel before binarization
 // ---------------------------------------------------------------------------
 
