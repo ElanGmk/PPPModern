@@ -13,6 +13,7 @@
 #include "ppp/core/processing_pipeline.h"
 #include "ppp/core/tiff_writer.h"
 #include "ppp/core/bmp.h"
+#include "ppp/core/pdf_writer.h"
 #include "ppp/core/output_writer.h"
 
 #include <algorithm>
@@ -5296,6 +5297,170 @@ bool test_output_multipage() {
 }
 
 // ---------------------------------------------------------------------------
+// PDF output tests
+// ---------------------------------------------------------------------------
+
+bool test_pdf_write_gray8() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(128);
+
+    auto tmp = fs::temp_directory_path() / "ppp_test_gray8.pdf";
+    bool ok = pdf::write_pdf(img, tmp);
+    if (!ok) {
+        std::cerr << "pdf write gray8: write failed" << std::endl;
+        return false;
+    }
+    if (!fs::exists(tmp)) {
+        std::cerr << "pdf write gray8: file not created" << std::endl;
+        return false;
+    }
+
+    // Basic validation: check file starts with %PDF.
+    std::ifstream f(tmp, std::ios::binary);
+    char header[5] = {};
+    f.read(header, 5);
+    if (std::string(header, 5) != "%PDF-") {
+        std::cerr << "pdf write gray8: invalid PDF header" << std::endl;
+        fs::remove(tmp);
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+bool test_pdf_write_rgb24() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(60, 40, PixelFormat::RGB24, 150.0, 150.0);
+    img.fill(200);
+
+    auto tmp = fs::temp_directory_path() / "ppp_test_rgb24.pdf";
+    bool ok = pdf::write_pdf(img, tmp);
+    if (!ok) {
+        std::cerr << "pdf write rgb24: write failed" << std::endl;
+        return false;
+    }
+    if (!fs::exists(tmp) || fs::file_size(tmp) < 100) {
+        std::cerr << "pdf write rgb24: file too small or missing" << std::endl;
+        fs::remove(tmp);
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+bool test_pdf_write_bw1() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(80, 60, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    for (int x = 10; x < 70; ++x)
+        img.set_bw_pixel(x, 30, 1);
+
+    auto tmp = fs::temp_directory_path() / "ppp_test_bw1.pdf";
+    bool ok = pdf::write_pdf(img, tmp);
+    if (!ok) {
+        std::cerr << "pdf write bw1: write failed" << std::endl;
+        return false;
+    }
+
+    // Check header.
+    std::ifstream f(tmp, std::ios::binary);
+    char header[5] = {};
+    f.read(header, 5);
+    if (std::string(header, 5) != "%PDF-") {
+        std::cerr << "pdf write bw1: invalid PDF header" << std::endl;
+        fs::remove(tmp);
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+bool test_pdf_write_multipage() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img1(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img1.fill(100);
+    Image img2(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img2.fill(200);
+    Image img3(50, 40, PixelFormat::RGB24, 300.0, 300.0);
+    img3.fill(150);
+
+    auto tmp = fs::temp_directory_path() / "ppp_test_multi.pdf";
+    bool ok = pdf::write_multipage_pdf({img1, img2, img3}, tmp);
+    if (!ok) {
+        std::cerr << "pdf multipage: write failed" << std::endl;
+        return false;
+    }
+
+    // Check header and that file has reasonable size.
+    std::ifstream f(tmp, std::ios::binary);
+    char header[5] = {};
+    f.read(header, 5);
+    if (std::string(header, 5) != "%PDF-") {
+        std::cerr << "pdf multipage: invalid header" << std::endl;
+        fs::remove(tmp);
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+bool test_pdf_to_memory() {
+    using namespace ppp::core;
+
+    Image img(30, 20, PixelFormat::Gray8, 72.0, 72.0);
+    img.fill(64);
+
+    auto data = pdf::write_pdf_to_memory(img);
+    if (data.size() < 50) {
+        std::cerr << "pdf to memory: output too small" << std::endl;
+        return false;
+    }
+
+    // Check starts with %PDF-.
+    if (data[0] != '%' || data[1] != 'P' || data[2] != 'D' || data[3] != 'F') {
+        std::cerr << "pdf to memory: invalid header" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_output_write_to_pdf() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(128);
+
+    auto tmp = fs::temp_directory_path() / "ppp_output_test.pdf";
+    auto result = output::write_output_to(img, tmp);
+    if (!result.success) {
+        std::cerr << "output write_to pdf: " << result.error << std::endl;
+        return false;
+    }
+    if (result.format != "pdf") {
+        std::cerr << "output write_to pdf: format=" << result.format << std::endl;
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Deskew tests
 // ---------------------------------------------------------------------------
 
@@ -5629,6 +5794,12 @@ int main() {
         {"output_conflict_report", test_output_conflict_report},
         {"output_write_to", test_output_write_to},
         {"output_multipage", test_output_multipage},
+        {"pdf_write_gray8", test_pdf_write_gray8},
+        {"pdf_write_rgb24", test_pdf_write_rgb24},
+        {"pdf_write_bw1", test_pdf_write_bw1},
+        {"pdf_write_multipage", test_pdf_write_multipage},
+        {"pdf_to_memory", test_pdf_to_memory},
+        {"output_write_to_pdf", test_output_write_to_pdf},
         {"detect_skew_angle_zero", test_detect_skew_angle_zero},
         {"rotate_arbitrary_identity", test_rotate_arbitrary_identity},
         {"rotate_arbitrary_bw1", test_rotate_arbitrary_bw1},

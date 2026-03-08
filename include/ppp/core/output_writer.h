@@ -62,8 +62,8 @@ struct OutputResult {
 
 /// Write a processed image to a specific path, auto-detecting format from extension.
 ///
-/// Supports .tif/.tiff (TIFF), .bmp (BMP).  Falls back to TIFF for unknown
-/// extensions.
+/// Supports .tif/.tiff (TIFF), .bmp (BMP), .pdf (PDF).  Falls back to
+/// TIFF for unknown extensions.
 ///
 /// @param image   Processed image.
 /// @param path    Output file path.

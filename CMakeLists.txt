@@ -24,6 +24,7 @@ add_library(ppp_core
     src/processing_pipeline.cpp
     src/tiff_writer.cpp
     src/bmp.cpp
+    src/pdf_writer.cpp
     src/output_writer.cpp
 )
 

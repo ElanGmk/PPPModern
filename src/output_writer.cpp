@@ -1,6 +1,7 @@
 #include "ppp/core/output_writer.h"
 
 #include "ppp/core/bmp.h"
+#include "ppp/core/pdf_writer.h"
 #include "ppp/core/tiff_writer.h"
 
 #include <algorithm>
@@ -65,10 +66,15 @@ bool write_as_bmp(const Image& image, const fs::path& path) {
     return bmp::write_bmp(image, path);
 }
 
+bool write_as_pdf(const Image& image, const fs::path& path) {
+    return pdf::write_pdf(image, path);
+}
+
 /// Determine output format from file extension.
 std::string format_from_extension(const fs::path& path) {
     auto ext = to_lower(path.extension().string());
     if (ext == ".bmp") return "bmp";
+    if (ext == ".pdf") return "pdf";
     if (ext == ".tif" || ext == ".tiff") return "tiff";
     return "tiff";  // Default.
 }
@@ -149,6 +155,8 @@ OutputResult write_output(const Image& image,
     bool ok = false;
     if (fmt == "bmp") {
         ok = write_as_bmp(image, out_path);
+    } else if (fmt == "pdf") {
+        ok = write_as_pdf(image, out_path);
     } else {
         ok = write_as_tiff(image, out_path, config);
     }
@@ -185,6 +193,8 @@ OutputResult write_output_to(const Image& image,
 
     if (fmt == "bmp") {
         ok = write_as_bmp(image, path);
+    } else if (fmt == "pdf") {
+        ok = write_as_pdf(image, path);
     } else {
         ok = write_as_tiff(image, path, config);
     }
