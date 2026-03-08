@@ -936,6 +936,96 @@ DeskewResult apply_deskew(const Image& image, const DeskewConfig& config) {
 }
 
 // ---------------------------------------------------------------------------
+// Morphological operations
+// ---------------------------------------------------------------------------
+
+void dilate(Image& image, StructuringElement element, int iterations) {
+    if (image.empty() || image.format() != PixelFormat::BW1) return;
+
+    auto w = image.width();
+    auto h = image.height();
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        Image temp(w, h, PixelFormat::BW1, image.dpi_x(), image.dpi_y());
+        temp.fill(0);
+
+        for (std::int32_t y = 0; y < h; ++y) {
+            for (std::int32_t x = 0; x < w; ++x) {
+                if (image.get_bw_pixel(x, y)) {
+                    temp.set_bw_pixel(x, y, 1);
+                    // Expand to neighbors.
+                    if (x > 0)     temp.set_bw_pixel(x - 1, y, 1);
+                    if (x < w - 1) temp.set_bw_pixel(x + 1, y, 1);
+                    if (y > 0)     temp.set_bw_pixel(x, y - 1, 1);
+                    if (y < h - 1) temp.set_bw_pixel(x, y + 1, 1);
+
+                    if (element == StructuringElement::Square) {
+                        if (x > 0 && y > 0)         temp.set_bw_pixel(x - 1, y - 1, 1);
+                        if (x < w - 1 && y > 0)     temp.set_bw_pixel(x + 1, y - 1, 1);
+                        if (x > 0 && y < h - 1)     temp.set_bw_pixel(x - 1, y + 1, 1);
+                        if (x < w - 1 && y < h - 1) temp.set_bw_pixel(x + 1, y + 1, 1);
+                    }
+                }
+            }
+        }
+
+        image = std::move(temp);
+    }
+}
+
+void erode(Image& image, StructuringElement element, int iterations) {
+    if (image.empty() || image.format() != PixelFormat::BW1) return;
+
+    auto w = image.width();
+    auto h = image.height();
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        Image temp(w, h, PixelFormat::BW1, image.dpi_x(), image.dpi_y());
+        temp.fill(0);
+
+        for (std::int32_t y = 0; y < h; ++y) {
+            for (std::int32_t x = 0; x < w; ++x) {
+                if (!image.get_bw_pixel(x, y)) continue;
+
+                bool keep = true;
+                // Check all required neighbors.
+                if (x == 0 || !image.get_bw_pixel(x - 1, y)) keep = false;
+                if (keep && (x >= w - 1 || !image.get_bw_pixel(x + 1, y))) keep = false;
+                if (keep && (y == 0 || !image.get_bw_pixel(x, y - 1))) keep = false;
+                if (keep && (y >= h - 1 || !image.get_bw_pixel(x, y + 1))) keep = false;
+
+                if (keep && element == StructuringElement::Square) {
+                    if (x == 0 || y == 0 || !image.get_bw_pixel(x - 1, y - 1)) keep = false;
+                    if (keep && (x >= w - 1 || y == 0 || !image.get_bw_pixel(x + 1, y - 1))) keep = false;
+                    if (keep && (x == 0 || y >= h - 1 || !image.get_bw_pixel(x - 1, y + 1))) keep = false;
+                    if (keep && (x >= w - 1 || y >= h - 1 || !image.get_bw_pixel(x + 1, y + 1))) keep = false;
+                }
+
+                if (keep) temp.set_bw_pixel(x, y, 1);
+            }
+        }
+
+        image = std::move(temp);
+    }
+}
+
+Image morph_open(const Image& image, StructuringElement element, int iterations) {
+    if (image.empty() || image.format() != PixelFormat::BW1) return image;
+    Image result = image;
+    erode(result, element, iterations);
+    dilate(result, element, iterations);
+    return result;
+}
+
+Image morph_close(const Image& image, StructuringElement element, int iterations) {
+    if (image.empty() || image.format() != PixelFormat::BW1) return image;
+    Image result = image;
+    dilate(result, element, iterations);
+    erode(result, element, iterations);
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Histogram
 // ---------------------------------------------------------------------------
 

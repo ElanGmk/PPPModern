@@ -4269,6 +4269,134 @@ bool test_binarize_already_bw1() {
 }
 
 // ---------------------------------------------------------------------------
+// Morphological operations tests
+// ---------------------------------------------------------------------------
+
+bool test_morph_dilate() {
+    using namespace ppp::core;
+
+    Image img(20, 20, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    img.set_bw_pixel(10, 10, 1);  // Single pixel.
+
+    ops::dilate(img, ops::StructuringElement::Cross);
+
+    // Should expand to 4-neighbors.
+    if (!img.get_bw_pixel(10, 10)) return false;
+    if (!img.get_bw_pixel(9, 10)) return false;
+    if (!img.get_bw_pixel(11, 10)) return false;
+    if (!img.get_bw_pixel(10, 9)) return false;
+    if (!img.get_bw_pixel(10, 11)) return false;
+    // Diagonal should NOT be set for Cross.
+    if (img.get_bw_pixel(9, 9)) {
+        std::cerr << "dilate cross: diagonal should not be set" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_morph_dilate_square() {
+    using namespace ppp::core;
+
+    Image img(20, 20, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    img.set_bw_pixel(10, 10, 1);
+
+    ops::dilate(img, ops::StructuringElement::Square);
+
+    // All 8-neighbors should be set.
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (!img.get_bw_pixel(10 + dx, 10 + dy)) {
+                std::cerr << "dilate square: (" << 10+dx << "," << 10+dy << ") not set" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_morph_erode() {
+    using namespace ppp::core;
+
+    // 3x3 block — after cross erosion, only center should remain.
+    Image img(20, 20, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    for (int y = 9; y <= 11; ++y)
+        for (int x = 9; x <= 11; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    ops::erode(img, ops::StructuringElement::Cross);
+
+    if (!img.get_bw_pixel(10, 10)) {
+        std::cerr << "erode: center should survive" << std::endl;
+        return false;
+    }
+    // Edge pixels of the block should be eroded.
+    if (img.get_bw_pixel(9, 9)) {
+        std::cerr << "erode: corner should be removed" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_morph_open_removes_noise() {
+    using namespace ppp::core;
+
+    Image img(30, 30, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Large block (survives opening).
+    for (int y = 5; y < 25; ++y)
+        for (int x = 5; x < 25; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    // Single-pixel noise.
+    img.set_bw_pixel(2, 2, 1);
+
+    auto result = ops::morph_open(img, ops::StructuringElement::Cross);
+
+    // Noise should be removed.
+    if (result.get_bw_pixel(2, 2)) {
+        std::cerr << "morph_open: noise should be removed" << std::endl;
+        return false;
+    }
+    // Block interior should survive.
+    if (!result.get_bw_pixel(15, 15)) {
+        std::cerr << "morph_open: block interior should survive" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_morph_close_fills_holes() {
+    using namespace ppp::core;
+
+    Image img(30, 30, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Solid block with a single-pixel hole.
+    for (int y = 5; y < 25; ++y)
+        for (int x = 5; x < 25; ++x)
+            img.set_bw_pixel(x, y, 1);
+    img.set_bw_pixel(15, 15, 0);  // Hole.
+
+    auto result = ops::morph_close(img, ops::StructuringElement::Cross);
+
+    // Hole should be filled.
+    if (!result.get_bw_pixel(15, 15)) {
+        std::cerr << "morph_close: hole should be filled" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Blank page detection tests
 // ---------------------------------------------------------------------------
 
@@ -5307,6 +5435,11 @@ int main() {
         {"binarize_gray8", test_binarize_gray8},
         {"binarize_otsu", test_binarize_otsu},
         {"binarize_already_bw1", test_binarize_already_bw1},
+        {"morph_dilate", test_morph_dilate},
+        {"morph_dilate_square", test_morph_dilate_square},
+        {"morph_erode", test_morph_erode},
+        {"morph_open_removes_noise", test_morph_open_removes_noise},
+        {"morph_close_fills_holes", test_morph_close_fills_holes},
         {"blank_page_empty_image", test_blank_page_empty_image},
         {"blank_page_white_image", test_blank_page_white_image},
         {"blank_page_content_image", test_blank_page_content_image},

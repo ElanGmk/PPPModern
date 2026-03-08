@@ -277,6 +277,48 @@ struct DeskewResult {
                                         const DeskewConfig& config);
 
 // ---------------------------------------------------------------------------
+// Morphological operations (BW1 images)
+// ---------------------------------------------------------------------------
+
+/// Structuring element shape for morphological operations.
+enum class StructuringElement {
+    Cross,      ///< 3x3 cross (4-connected).
+    Square,     ///< 3x3 square (8-connected).
+};
+
+/// Dilate a BW1 image — grow foreground regions.
+///
+/// Each foreground pixel expands into its neighbors defined by the
+/// structuring element.  Operates in-place.
+///
+/// @param image    BW1 image to modify.
+/// @param element  Structuring element shape (Cross or Square).
+/// @param iterations  Number of dilation passes (default 1).
+void dilate(Image& image, StructuringElement element = StructuringElement::Square,
+            int iterations = 1);
+
+/// Erode a BW1 image — shrink foreground regions.
+///
+/// A foreground pixel is kept only if all its neighbors (defined by the
+/// structuring element) are also foreground.  Operates in-place.
+///
+/// @param image    BW1 image to modify.
+/// @param element  Structuring element shape (Cross or Square).
+/// @param iterations  Number of erosion passes (default 1).
+void erode(Image& image, StructuringElement element = StructuringElement::Square,
+           int iterations = 1);
+
+/// Morphological opening (erode then dilate) — removes small foreground noise.
+[[nodiscard]] Image morph_open(const Image& image,
+                                StructuringElement element = StructuringElement::Square,
+                                int iterations = 1);
+
+/// Morphological closing (dilate then erode) — fills small holes in foreground.
+[[nodiscard]] Image morph_close(const Image& image,
+                                 StructuringElement element = StructuringElement::Square,
+                                 int iterations = 1);
+
+// ---------------------------------------------------------------------------
 // Histogram and auto-threshold
 // ---------------------------------------------------------------------------
 
