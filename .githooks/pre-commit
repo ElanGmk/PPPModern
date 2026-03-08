@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Auto-format staged C/C++ files using clang-format.
+
+if ! command -v clang-format >/dev/null 2>&1; then
+  echo "clang-format not found; skipping formatting." >&2
+  exit 0
+fi
+
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\\.(h|hpp|hh|c|cc|cpp)$' | grep -v '^build/' || true)
+[ -z "$files" ] && exit 0
+
+clang-format -i $files
+git add $files
+
+exit 0

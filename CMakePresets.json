@@ -1,0 +1,37 @@
+{
+  "$schema": "https://cmake.org/cmake/help/latest/manual/cmake-presets.7.json",
+  "version": 4,
+  "configurePresets": [
+    {
+      "name": "windows-vcpkg",
+      "displayName": "Windows MSVC + vcpkg (x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}\\scripts\\buildsystems\\vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "PPP_ENABLE_SQLITE": "ON",
+        "PPP_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-vcpkg-release",
+      "configurePreset": "windows-vcpkg",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-vcpkg-release",
+      "configurePreset": "windows-vcpkg",
+      "configuration": "Release",
+      "output": { "shortProgress": true }
+    }
+  ]
+}
+

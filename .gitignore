@@ -1,0 +1,47 @@
+# Build artifacts
+*.obj
+*.lib
+*.dll
+*.exe
+*.pdb
+*.suo
+*.user
+*.ncb
+*.aps
+*.opt
+*.sdf
+*.opensdf
+bin/
+obj/
+build/
+Debug/
+Release/
+x64/
+Win32/
+__obj/
+__out/
+__debug/
+__libs/
+_obj_debug/
+_obj_release/
+__history/
+
+# IDE and system files
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vs/
+.vscode/
+CMakeSettings.json
+
+# vcpkg
+vcpkg_installed/
+
+# CMake
+cmake-build-*/
+out/
+
+# SQLite test artifacts
+*.db
+*.sqlite

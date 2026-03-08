@@ -1,0 +1,9 @@
+{
+  "name": "ppp-modern",
+  "version-string": "0.1.0",
+  "description": "Modernized PPP core library and tools",
+  "dependencies": [
+    "sqlite3"
+  ]
+}
+

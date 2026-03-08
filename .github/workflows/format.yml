@@ -1,0 +1,21 @@
+name: Format
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Check formatting
+        run: |
+          set -e
+          FILES=$(git ls-files | grep -E '\\.(h|hpp|hh|c|cc|cpp)$' | grep -v '^build/' || true)
+          [ -z "$FILES" ] && exit 0
+          clang-format --version
+          clang-format --dry-run -Werror $FILES

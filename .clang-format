@@ -1,0 +1,17 @@
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+PointerAlignment: Left
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+Cpp11BracedListStyle: true
+BreakBeforeBraces: Attach
+NamespaceIndentation: None
+SortIncludes: true
+IncludeBlocks: Preserve
+ReflowComments: true
