@@ -19,6 +19,7 @@ add_library(ppp_core
     src/scheduling_policy_io.cpp
     src/tiff.cpp
     src/geometry.cpp
+    src/image.cpp
 )
 
 set(PPP_CORE_HAVE_SQLITE 0)

@@ -8,6 +8,7 @@
 #include "ppp/core/scheduling_policy_io.h"
 #include "ppp/core/tiff.h"
 #include "ppp/core/geometry.h"
+#include "ppp/core/image.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2758,6 +2759,267 @@ bool test_geometry_connected_components_roi() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Image tests
+// ---------------------------------------------------------------------------
+
+bool test_image_construction() {
+    using namespace ppp::core;
+
+    // Default construction.
+    Image empty;
+    if (!empty.empty()) return false;
+    if (empty.width() != 0 || empty.height() != 0) return false;
+
+    // Gray8 image.
+    Image gray(100, 50, PixelFormat::Gray8);
+    if (gray.width() != 100 || gray.height() != 50) return false;
+    if (gray.format() != PixelFormat::Gray8) return false;
+    if (gray.stride() != 100) return false;  // 100 bytes, already 4-aligned.
+    if (gray.empty()) return false;
+
+    // RGB24 image — stride should be padded.
+    Image rgb(10, 10, PixelFormat::RGB24);
+    // 10 * 3 = 30 bytes per row → padded to 32.
+    if (rgb.stride() != 32) return false;
+
+    // BW1 image.
+    Image bw(100, 10, PixelFormat::BW1);
+    // 100 bits = 13 bytes → padded to 16.
+    if (bw.stride() != 16) {
+        std::cerr << "bw stride: " << bw.stride() << " expected 16" << std::endl;
+        return false;
+    }
+
+    // DPI constructor.
+    Image dpi_img(100, 100, PixelFormat::Gray8, 300.0, 600.0);
+    if (dpi_img.dpi_x() != 300.0 || dpi_img.dpi_y() != 600.0) return false;
+
+    return true;
+}
+
+bool test_image_bw_pixel_access() {
+    using namespace ppp::core;
+
+    Image bw(16, 4, PixelFormat::BW1);
+
+    // All pixels should start as 0.
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 16; ++x)
+            if (bw.get_bw_pixel(x, y) != 0) return false;
+
+    // Set some pixels.
+    bw.set_bw_pixel(0, 0, 1);
+    bw.set_bw_pixel(7, 0, 1);
+    bw.set_bw_pixel(8, 0, 1);
+    bw.set_bw_pixel(15, 3, 1);
+
+    if (bw.get_bw_pixel(0, 0) != 1) return false;
+    if (bw.get_bw_pixel(1, 0) != 0) return false;
+    if (bw.get_bw_pixel(7, 0) != 1) return false;
+    if (bw.get_bw_pixel(8, 0) != 1) return false;
+    if (bw.get_bw_pixel(15, 3) != 1) return false;
+
+    // Clear a pixel.
+    bw.set_bw_pixel(0, 0, 0);
+    if (bw.get_bw_pixel(0, 0) != 0) return false;
+
+    return true;
+}
+
+bool test_image_fill_and_invert() {
+    using namespace ppp::core;
+
+    Image gray(4, 4, PixelFormat::Gray8);
+    gray.fill(0x80);
+    if (gray.row(0)[0] != 0x80 || gray.row(3)[3] != 0x80) return false;
+
+    gray.invert();
+    if (gray.row(0)[0] != 0x7F || gray.row(3)[3] != 0x7F) return false;
+
+    return true;
+}
+
+bool test_image_crop() {
+    using namespace ppp::core;
+
+    // Create a 10x10 gray image with row = y value.
+    Image img(10, 10, PixelFormat::Gray8);
+    for (int y = 0; y < 10; ++y)
+        std::memset(img.row(y), static_cast<std::uint8_t>(y * 10), 10);
+
+    auto cropped = img.crop(2, 3, 5, 4);
+    if (cropped.width() != 5 || cropped.height() != 4) return false;
+    // Row 0 of cropped = row 3 of original → value 30.
+    if (cropped.row(0)[0] != 30) return false;
+    // Row 3 of cropped = row 6 of original → value 60.
+    if (cropped.row(3)[0] != 60) return false;
+
+    // Crop with clamping.
+    auto clamped = img.crop(8, 8, 10, 10);
+    if (clamped.width() != 2 || clamped.height() != 2) return false;
+
+    // BW1 crop.
+    Image bw(16, 8, PixelFormat::BW1);
+    bw.set_bw_pixel(5, 3, 1);
+    auto bw_crop = bw.crop(4, 2, 4, 4);
+    if (bw_crop.get_bw_pixel(1, 1) != 1) return false;  // (5-4, 3-2)
+    if (bw_crop.get_bw_pixel(0, 0) != 0) return false;
+
+    return true;
+}
+
+bool test_image_rotate_cw90() {
+    using namespace ppp::core;
+
+    // 3x2 gray image:
+    //   [1, 2, 3]
+    //   [4, 5, 6]
+    Image img(3, 2, PixelFormat::Gray8);
+    img.row(0)[0] = 1; img.row(0)[1] = 2; img.row(0)[2] = 3;
+    img.row(1)[0] = 4; img.row(1)[1] = 5; img.row(1)[2] = 6;
+
+    auto rot = img.rotate_cw90();
+    // CW90: 3x2 → 2x3
+    //   [4, 1]
+    //   [5, 2]
+    //   [6, 3]
+    if (rot.width() != 2 || rot.height() != 3) return false;
+    if (rot.row(0)[0] != 4 || rot.row(0)[1] != 1) return false;
+    if (rot.row(1)[0] != 5 || rot.row(1)[1] != 2) return false;
+    if (rot.row(2)[0] != 6 || rot.row(2)[1] != 3) return false;
+
+    return true;
+}
+
+bool test_image_rotate_ccw90() {
+    using namespace ppp::core;
+
+    Image img(3, 2, PixelFormat::Gray8);
+    img.row(0)[0] = 1; img.row(0)[1] = 2; img.row(0)[2] = 3;
+    img.row(1)[0] = 4; img.row(1)[1] = 5; img.row(1)[2] = 6;
+
+    auto rot = img.rotate_ccw90();
+    // CCW90: 3x2 → 2x3
+    //   [3, 6]
+    //   [2, 5]
+    //   [1, 4]
+    if (rot.width() != 2 || rot.height() != 3) return false;
+    if (rot.row(0)[0] != 3 || rot.row(0)[1] != 6) return false;
+    if (rot.row(1)[0] != 2 || rot.row(1)[1] != 5) return false;
+    if (rot.row(2)[0] != 1 || rot.row(2)[1] != 4) return false;
+
+    return true;
+}
+
+bool test_image_rotate_180() {
+    using namespace ppp::core;
+
+    Image img(3, 2, PixelFormat::Gray8);
+    img.row(0)[0] = 1; img.row(0)[1] = 2; img.row(0)[2] = 3;
+    img.row(1)[0] = 4; img.row(1)[1] = 5; img.row(1)[2] = 6;
+
+    auto rot = img.rotate_180();
+    // 180: [6,5,4], [3,2,1]
+    if (rot.width() != 3 || rot.height() != 2) return false;
+    if (rot.row(0)[0] != 6 || rot.row(0)[1] != 5 || rot.row(0)[2] != 4) return false;
+    if (rot.row(1)[0] != 3 || rot.row(1)[1] != 2 || rot.row(1)[2] != 1) return false;
+
+    return true;
+}
+
+bool test_image_pad_and_blit() {
+    using namespace ppp::core;
+
+    Image img(4, 4, PixelFormat::Gray8);
+    img.fill(100);
+
+    auto padded = img.pad(2, 3, 3, 2, 0);
+    // New size: (4+3+3) x (4+2+2) = 10 x 8.
+    if (padded.width() != 10 || padded.height() != 8) return false;
+    // Padding area should be 0.
+    if (padded.row(0)[0] != 0) return false;
+    // Content area at (3,2).
+    if (padded.row(2)[3] != 100) return false;
+    if (padded.row(5)[6] != 100) return false;
+
+    return true;
+}
+
+bool test_image_convert_gray_to_bw() {
+    using namespace ppp::core;
+
+    Image gray(8, 1, PixelFormat::Gray8);
+    // Pixels: 0, 64, 127, 128, 200, 255, 50, 130
+    gray.row(0)[0] = 0;
+    gray.row(0)[1] = 64;
+    gray.row(0)[2] = 127;
+    gray.row(0)[3] = 128;
+    gray.row(0)[4] = 200;
+    gray.row(0)[5] = 255;
+    gray.row(0)[6] = 50;
+    gray.row(0)[7] = 130;
+
+    auto bw = gray.convert(PixelFormat::BW1, 128);
+    // < 128 → 1 (black), >= 128 → 0 (white).
+    if (bw.get_bw_pixel(0, 0) != 1) return false;   // 0 < 128
+    if (bw.get_bw_pixel(1, 0) != 1) return false;   // 64 < 128
+    if (bw.get_bw_pixel(2, 0) != 1) return false;   // 127 < 128
+    if (bw.get_bw_pixel(3, 0) != 0) return false;   // 128 >= 128
+    if (bw.get_bw_pixel(4, 0) != 0) return false;   // 200 >= 128
+    if (bw.get_bw_pixel(5, 0) != 0) return false;   // 255 >= 128
+    if (bw.get_bw_pixel(6, 0) != 1) return false;   // 50 < 128
+    if (bw.get_bw_pixel(7, 0) != 0) return false;   // 130 >= 128
+
+    return true;
+}
+
+bool test_image_convert_bw_to_gray() {
+    using namespace ppp::core;
+
+    Image bw(8, 1, PixelFormat::BW1);
+    bw.set_bw_pixel(0, 0, 1);  // black
+    bw.set_bw_pixel(1, 0, 0);  // white
+
+    auto gray = bw.convert(PixelFormat::Gray8);
+    if (gray.row(0)[0] != 0) return false;     // black → 0
+    if (gray.row(0)[1] != 255) return false;   // white → 255
+
+    return true;
+}
+
+bool test_image_convert_rgb_to_gray() {
+    using namespace ppp::core;
+
+    Image rgb(2, 1, PixelFormat::RGB24);
+    // Pure white.
+    rgb.row(0)[0] = 255; rgb.row(0)[1] = 255; rgb.row(0)[2] = 255;
+    // Pure black.
+    rgb.row(0)[3] = 0; rgb.row(0)[4] = 0; rgb.row(0)[5] = 0;
+
+    auto gray = rgb.convert(PixelFormat::Gray8);
+    if (gray.row(0)[0] != 255) return false;  // White stays white.
+    if (gray.row(0)[1] != 0) return false;    // Black stays black.
+
+    return true;
+}
+
+bool test_image_deep_copy() {
+    using namespace ppp::core;
+
+    Image orig(10, 10, PixelFormat::Gray8);
+    orig.fill(42);
+
+    Image copy = orig;
+    copy.fill(99);
+
+    // Original should be unchanged.
+    if (orig.row(0)[0] != 42) return false;
+    if (copy.row(0)[0] != 99) return false;
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -2803,6 +3065,18 @@ int main() {
         {"geometry_spans_from_bitmap", test_geometry_spans_from_bitmap},
         {"geometry_connected_components", test_geometry_connected_components},
         {"geometry_connected_components_roi", test_geometry_connected_components_roi},
+        {"image_construction", test_image_construction},
+        {"image_bw_pixel_access", test_image_bw_pixel_access},
+        {"image_fill_and_invert", test_image_fill_and_invert},
+        {"image_crop", test_image_crop},
+        {"image_rotate_cw90", test_image_rotate_cw90},
+        {"image_rotate_ccw90", test_image_rotate_ccw90},
+        {"image_rotate_180", test_image_rotate_180},
+        {"image_pad_and_blit", test_image_pad_and_blit},
+        {"image_convert_gray_to_bw", test_image_convert_gray_to_bw},
+        {"image_convert_bw_to_gray", test_image_convert_bw_to_gray},
+        {"image_convert_rgb_to_gray", test_image_convert_rgb_to_gray},
+        {"image_deep_copy", test_image_deep_copy},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);
