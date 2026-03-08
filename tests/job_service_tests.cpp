@@ -2,6 +2,8 @@
 #include "ppp/core/job_repository.h"
 #include "ppp/core/job_serialization.h"
 #include "ppp/core/job_service.h"
+#include "ppp/core/processing_config.h"
+#include "ppp/core/processing_config_io.h"
 #include "ppp/core/scheduling_policy.h"
 #include "ppp/core/scheduling_policy_io.h"
 
@@ -2012,6 +2014,306 @@ bool test_job_processor_cancellation() {
     return true;
 }
 
+bool test_processing_config_enum_round_trip() {
+    using namespace ppp::core;
+
+    // MeasurementUnit
+    for (auto u : {MeasurementUnit::Inches, MeasurementUnit::Pixels, MeasurementUnit::Millimeters}) {
+        auto parsed = measurement_unit_from_string(to_string(u));
+        if (!parsed || *parsed != u) {
+            std::cerr << "MeasurementUnit round-trip failed" << std::endl;
+            return false;
+        }
+    }
+
+    // CanvasPreset
+    for (auto cp : {CanvasPreset::Autodetect, CanvasPreset::Letter, CanvasPreset::Legal,
+                    CanvasPreset::Tabloid, CanvasPreset::A4, CanvasPreset::A3, CanvasPreset::Custom}) {
+        auto parsed = canvas_preset_from_string(to_string(cp));
+        if (!parsed || *parsed != cp) {
+            std::cerr << "CanvasPreset round-trip failed" << std::endl;
+            return false;
+        }
+    }
+
+    // RasterFormat
+    for (auto rf : {RasterFormat::Raw, RasterFormat::Group4, RasterFormat::LZW, RasterFormat::JPEG}) {
+        auto parsed = raster_format_from_string(to_string(rf));
+        if (!parsed || *parsed != rf) {
+            std::cerr << "RasterFormat round-trip failed" << std::endl;
+            return false;
+        }
+    }
+
+    // Short aliases
+    if (measurement_unit_from_string("mm") != MeasurementUnit::Millimeters) {
+        std::cerr << "mm alias failed" << std::endl;
+        return false;
+    }
+    if (raster_format_from_string("jpg") != RasterFormat::JPEG) {
+        std::cerr << "jpg alias failed" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_processing_profile_json_round_trip() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    profile.name = "test-profile";
+    profile.working_unit = MeasurementUnit::Millimeters;
+    profile.detected_dpi = 300;
+    profile.detected_width = 2550;
+    profile.detected_height = 3300;
+    profile.position_image = true;
+    profile.keep_outside_subimage = true;
+    profile.keep_original_size = false;
+    profile.odd_even_mode = true;
+    profile.rotation = Rotation::CW90;
+
+    profile.canvas.preset = CanvasPreset::A4;
+    profile.canvas.width = {210.0, MeasurementUnit::Millimeters};
+    profile.canvas.height = {297.0, MeasurementUnit::Millimeters};
+    profile.canvas.orientation = Orientation::Portrait;
+
+    // Margins: set up odd page margins with non-default values
+    profile.margins[0].top.distance = {25.4, MeasurementUnit::Millimeters};
+    profile.margins[0].top.mode = MarginMode::Set;
+    profile.margins[0].left.distance = {12.7, MeasurementUnit::Millimeters};
+    profile.margins[0].left.mode = MarginMode::Check;
+    profile.margins[0].center_horizontal = true;
+    profile.margins[0].keep_horizontal = true;
+    profile.margins[0].keep_x = {5.0, MeasurementUnit::Millimeters};
+
+    // Offsets
+    profile.offsets[0].x = {1.5, MeasurementUnit::Inches};
+    profile.offsets[0].y = {2.0, MeasurementUnit::Inches};
+
+    // Deskew
+    profile.deskew.enabled = true;
+    profile.deskew.detect_mode = 3;
+    profile.deskew.min_angle = 0.1;
+    profile.deskew.max_angle = 5.0;
+    profile.deskew.fast = true;
+    profile.deskew.interpolate = true;
+    profile.deskew.character_protect = true;
+    profile.deskew.char_protect_below = 0.5;
+
+    // Despeckle
+    profile.despeckle.mode = DespeckleMode::Object;
+    profile.despeckle.object_min = 2;
+    profile.despeckle.object_max = 8;
+
+    // Edge cleanup
+    profile.edge_cleanup.enabled = true;
+    profile.edge_cleanup.order = EdgeCleanupOrder::AfterDeskew;
+    profile.edge_cleanup.set1.top = {0.5, MeasurementUnit::Inches};
+    profile.edge_cleanup.set1.left = {0.25, MeasurementUnit::Inches};
+
+    // Hole cleanup
+    profile.hole_cleanup.enabled = true;
+    profile.hole_cleanup.set1.top = {1.0, MeasurementUnit::Inches};
+
+    // Subimage
+    profile.subimage.max_width = {8.0, MeasurementUnit::Inches};
+    profile.subimage.max_height = {10.5, MeasurementUnit::Inches};
+    profile.subimage.report_small = true;
+    profile.subimage.min_width_px = 50;
+    profile.subimage.min_height_px = 50;
+
+    // Movement limit
+    profile.movement_limit.enabled = true;
+    profile.movement_limit.max_vertical = {3.0, MeasurementUnit::Inches};
+    profile.movement_limit.max_horizontal = {2.0, MeasurementUnit::Inches};
+
+    // Resize
+    profile.resize.enabled = true;
+    profile.resize.source = ResizeFrom::Smart;
+    profile.resize.anti_alias = true;
+    profile.resize.keep_size = false;
+    profile.resize.canvas.preset = CanvasPreset::Letter;
+    profile.resize.v_alignment = VAlignment::Top;
+    profile.resize.h_alignment = HAlignment::Proportional;
+    profile.resize.allow_shrink = true;
+    profile.resize.allow_enlarge = false;
+    profile.resize.output_path = "/output/resized";
+    profile.resize.merge_tiff = true;
+    profile.resize.merge_tiff_name = "merged.tif";
+
+    // Output
+    profile.output.tiff_output = true;
+    profile.output.pdf_output = true;
+    profile.output.raster_format = RasterFormat::Group4;
+    profile.output.jpeg_quality = 90;
+    profile.output.new_extension = "out.tif";
+    profile.output.save_to_different_dir = true;
+    profile.output.output_directory = "/output/dir";
+    profile.output.conflict_policy = ConflictPolicy::Report;
+    profile.output.path_mode = PathMode::Absolute;
+
+    // Scan
+    profile.scan.prefix = "SCAN_";
+    profile.scan.start_at = 10;
+    profile.scan.increment = 2;
+    profile.scan.extension = "png";
+    profile.scan.crop = true;
+    profile.scan.verso_recto = true;
+    profile.scan.force_resolution = 600;
+
+    // Print
+    profile.print.page_use_mode = 1;
+    profile.print.scale_mode = 2;
+    profile.print.scale_x = 150.0;
+    profile.print.scale_y = 75.0;
+
+    profile.page_detection_style_sheet = "Custom Sheet";
+
+    // Serialize
+    const auto json = processing_profile_to_json(profile);
+    if (json.empty()) {
+        std::cerr << "profile serialization produced empty string" << std::endl;
+        return false;
+    }
+
+    // Deserialize
+    auto parsed = processing_profile_from_json(json);
+    if (!parsed) {
+        std::cerr << "profile deserialization failed" << std::endl;
+        return false;
+    }
+
+    const auto& p = *parsed;
+
+    // Verify top-level fields
+    if (p.name != "test-profile") { std::cerr << "name mismatch" << std::endl; return false; }
+    if (p.working_unit != MeasurementUnit::Millimeters) { std::cerr << "working_unit mismatch" << std::endl; return false; }
+    if (p.detected_dpi != 300) { std::cerr << "detected_dpi mismatch" << std::endl; return false; }
+    if (p.detected_width != 2550) { std::cerr << "detected_width mismatch" << std::endl; return false; }
+    if (p.detected_height != 3300) { std::cerr << "detected_height mismatch" << std::endl; return false; }
+    if (!p.position_image) { std::cerr << "position_image mismatch" << std::endl; return false; }
+    if (!p.keep_outside_subimage) { std::cerr << "keep_outside_subimage mismatch" << std::endl; return false; }
+    if (p.keep_original_size) { std::cerr << "keep_original_size mismatch" << std::endl; return false; }
+    if (!p.odd_even_mode) { std::cerr << "odd_even_mode mismatch" << std::endl; return false; }
+    if (p.rotation != Rotation::CW90) { std::cerr << "rotation mismatch" << std::endl; return false; }
+
+    // Canvas
+    if (p.canvas.preset != CanvasPreset::A4) { std::cerr << "canvas preset mismatch" << std::endl; return false; }
+    if (p.canvas.width.value != 210.0) { std::cerr << "canvas width mismatch" << std::endl; return false; }
+    if (p.canvas.orientation != Orientation::Portrait) { std::cerr << "canvas orientation mismatch" << std::endl; return false; }
+
+    // Margins
+    if (p.margins[0].top.distance.value != 25.4) { std::cerr << "margin top value mismatch" << std::endl; return false; }
+    if (p.margins[0].top.mode != MarginMode::Set) { std::cerr << "margin top mode mismatch" << std::endl; return false; }
+    if (p.margins[0].left.mode != MarginMode::Check) { std::cerr << "margin left mode mismatch" << std::endl; return false; }
+    if (!p.margins[0].center_horizontal) { std::cerr << "margin center_horizontal mismatch" << std::endl; return false; }
+    if (!p.margins[0].keep_horizontal) { std::cerr << "margin keep_horizontal mismatch" << std::endl; return false; }
+
+    // Offsets
+    if (p.offsets[0].x.value != 1.5) { std::cerr << "offset x mismatch" << std::endl; return false; }
+
+    // Deskew
+    if (!p.deskew.enabled) { std::cerr << "deskew enabled mismatch" << std::endl; return false; }
+    if (p.deskew.detect_mode != 3) { std::cerr << "deskew detect_mode mismatch" << std::endl; return false; }
+    if (p.deskew.max_angle != 5.0) { std::cerr << "deskew max_angle mismatch" << std::endl; return false; }
+    if (!p.deskew.fast) { std::cerr << "deskew fast mismatch" << std::endl; return false; }
+    if (!p.deskew.interpolate) { std::cerr << "deskew interpolate mismatch" << std::endl; return false; }
+
+    // Despeckle
+    if (p.despeckle.mode != DespeckleMode::Object) { std::cerr << "despeckle mode mismatch" << std::endl; return false; }
+    if (p.despeckle.object_min != 2) { std::cerr << "despeckle object_min mismatch" << std::endl; return false; }
+
+    // Edge cleanup
+    if (!p.edge_cleanup.enabled) { std::cerr << "edge_cleanup enabled mismatch" << std::endl; return false; }
+    if (p.edge_cleanup.order != EdgeCleanupOrder::AfterDeskew) { std::cerr << "edge_cleanup order mismatch" << std::endl; return false; }
+
+    // Resize
+    if (!p.resize.enabled) { std::cerr << "resize enabled mismatch" << std::endl; return false; }
+    if (p.resize.source != ResizeFrom::Smart) { std::cerr << "resize source mismatch" << std::endl; return false; }
+    if (p.resize.v_alignment != VAlignment::Top) { std::cerr << "resize v_alignment mismatch" << std::endl; return false; }
+    if (p.resize.h_alignment != HAlignment::Proportional) { std::cerr << "resize h_alignment mismatch" << std::endl; return false; }
+    if (p.resize.merge_tiff_name != "merged.tif") { std::cerr << "resize merge_tiff_name mismatch" << std::endl; return false; }
+
+    // Output
+    if (p.output.raster_format != RasterFormat::Group4) { std::cerr << "output raster_format mismatch" << std::endl; return false; }
+    if (p.output.jpeg_quality != 90) { std::cerr << "output jpeg_quality mismatch" << std::endl; return false; }
+    if (p.output.conflict_policy != ConflictPolicy::Report) { std::cerr << "output conflict_policy mismatch" << std::endl; return false; }
+    if (p.output.path_mode != PathMode::Absolute) { std::cerr << "output path_mode mismatch" << std::endl; return false; }
+
+    // Scan
+    if (p.scan.prefix != "SCAN_") { std::cerr << "scan prefix mismatch" << std::endl; return false; }
+    if (p.scan.start_at != 10) { std::cerr << "scan start_at mismatch" << std::endl; return false; }
+    if (p.scan.force_resolution != 600) { std::cerr << "scan force_resolution mismatch" << std::endl; return false; }
+
+    // Print
+    if (p.print.scale_mode != 2) { std::cerr << "print scale_mode mismatch" << std::endl; return false; }
+    if (p.print.scale_x != 150.0) { std::cerr << "print scale_x mismatch" << std::endl; return false; }
+
+    if (p.page_detection_style_sheet != "Custom Sheet") { std::cerr << "page_detection_style_sheet mismatch" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_processing_profile_file_round_trip() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    profile.name = "file-test";
+    profile.deskew.enabled = true;
+    profile.deskew.max_angle = 7.5;
+    profile.output.pdf_output = true;
+    profile.output.jpeg_quality = 85;
+
+    auto temp = fs::temp_directory_path() / "ppp_profile_test.json";
+    if (!write_processing_profile(profile, temp)) {
+        std::cerr << "failed to write processing profile" << std::endl;
+        return false;
+    }
+
+    auto loaded = read_processing_profile(temp);
+    fs::remove(temp);
+
+    if (!loaded) {
+        std::cerr << "failed to read processing profile" << std::endl;
+        return false;
+    }
+
+    if (loaded->name != "file-test") { std::cerr << "file round-trip name mismatch" << std::endl; return false; }
+    if (!loaded->deskew.enabled) { std::cerr << "file round-trip deskew mismatch" << std::endl; return false; }
+    if (loaded->deskew.max_angle != 7.5) { std::cerr << "file round-trip max_angle mismatch" << std::endl; return false; }
+    if (!loaded->output.pdf_output) { std::cerr << "file round-trip pdf_output mismatch" << std::endl; return false; }
+    if (loaded->output.jpeg_quality != 85) { std::cerr << "file round-trip jpeg_quality mismatch" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_processing_profile_default_values() {
+    using namespace ppp::core;
+
+    // Default-constructed profile should round-trip cleanly
+    ProcessingProfile profile;
+    const auto json = processing_profile_to_json(profile);
+    auto parsed = processing_profile_from_json(json);
+    if (!parsed) {
+        std::cerr << "default profile round-trip failed" << std::endl;
+        return false;
+    }
+
+    // Verify key defaults survived
+    if (parsed->working_unit != MeasurementUnit::Inches) { std::cerr << "default working_unit wrong" << std::endl; return false; }
+    if (parsed->canvas.preset != CanvasPreset::Letter) { std::cerr << "default canvas preset wrong" << std::endl; return false; }
+    if (parsed->rotation != Rotation::None) { std::cerr << "default rotation wrong" << std::endl; return false; }
+    if (parsed->deskew.enabled) { std::cerr << "default deskew should be disabled" << std::endl; return false; }
+    if (parsed->despeckle.mode != DespeckleMode::None) { std::cerr << "default despeckle wrong" << std::endl; return false; }
+    if (parsed->output.raster_format != RasterFormat::JPEG) { std::cerr << "default raster_format wrong" << std::endl; return false; }
+    if (parsed->output.jpeg_quality != 75) { std::cerr << "default jpeg_quality wrong" << std::endl; return false; }
+    if (!parsed->resize.keep_size) { std::cerr << "default resize keep_size wrong" << std::endl; return false; }
+    if (parsed->page_detection_style_sheet != "Factory defaults") { std::cerr << "default style sheet wrong" << std::endl; return false; }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -2042,6 +2344,10 @@ int main() {
         {"event_sink_invocation", test_event_sink_invocation},
         {"mutation_returns_false_for_missing_job", test_mutation_returns_false_for_missing_job},
         {"job_processor_cancellation", test_job_processor_cancellation},
+        {"processing_config_enum_round_trip", test_processing_config_enum_round_trip},
+        {"processing_profile_json_round_trip", test_processing_profile_json_round_trip},
+        {"processing_profile_file_round_trip", test_processing_profile_file_round_trip},
+        {"processing_profile_default_values", test_processing_profile_default_values},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);

@@ -14,6 +14,8 @@ add_library(ppp_core
     src/job_repository.cpp
     src/job_serialization.cpp
     src/job_service.cpp
+    src/processing_config.cpp
+    src/processing_config_io.cpp
     src/scheduling_policy_io.cpp
 )
 

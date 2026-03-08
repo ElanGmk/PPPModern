@@ -26,6 +26,9 @@ _obj_debug/
 _obj_release/
 __history/
 
+# Claude Code local settings
+.claude/
+
 # IDE and system files
 *.log
 Thumbs.db

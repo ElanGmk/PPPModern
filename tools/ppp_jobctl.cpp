@@ -2,6 +2,8 @@
 #include "ppp/core/job_repository.h"
 #include "ppp/core/job_serialization.h"
 #include "ppp/core/job_service.h"
+#include "ppp/core/processing_config.h"
+#include "ppp/core/processing_config_io.h"
 #include "ppp/core/scheduling_policy.h"
 #include "ppp/core/scheduling_policy_io.h"
 
@@ -56,6 +58,9 @@ void print_usage() {
                  "  rebalance [--policy file|--policy-dir dir] [--within-minutes <min> <priority>]\n"
                  "                                     [--overdue <priority>] Escalate priorities based on due windows,\n"
                  "                                     policy files, or layered policy directories\n"
+                 "  profile-init <path> [name]        Create a default processing profile as JSON\n"
+                 "  profile-show <path>               Display a processing profile in human-readable form\n"
+                 "  profile-validate <path>           Validate a processing profile JSON file\n"
                  "  migrate [database|--sqlserver <connection>] Apply pending migrations for the configured backing store\n"
                  "  run-next [--fail msg|--cancel msg] [--resume] [--continue] [--json]\n"
                  "                                     Process the next submitted job, optionally\n"
@@ -1309,6 +1314,71 @@ try {
             return 0;
         }
 
+        return 0;
+    }
+
+    if (command == "profile-init") {
+        if (argc < 3) {
+            std::cerr << "Usage: ppp_jobctl profile-init <path> [name]" << std::endl;
+            return 1;
+        }
+        const auto path = std::filesystem::path{argv[2]};
+        ppp::core::ProcessingProfile profile;
+        if (argc > 3) {
+            profile.name = argv[3];
+        }
+        if (!ppp::core::write_processing_profile(profile, path)) {
+            std::cerr << "failed to write profile to " << path << std::endl;
+            return 1;
+        }
+        std::cout << "profile written to " << path << std::endl;
+        return 0;
+    }
+
+    if (command == "profile-show") {
+        if (argc < 3) {
+            std::cerr << "Usage: ppp_jobctl profile-show <path>" << std::endl;
+            return 1;
+        }
+        auto profile = ppp::core::read_processing_profile(std::filesystem::path{argv[2]});
+        if (!profile) {
+            std::cerr << "failed to read or parse profile: " << argv[2] << std::endl;
+            return 1;
+        }
+        const auto& p = *profile;
+        std::cout << "name:              " << (p.name.empty() ? "(unnamed)" : p.name) << "\n";
+        std::cout << "working_unit:      " << ppp::core::to_string(p.working_unit) << "\n";
+        std::cout << "rotation:          " << ppp::core::to_string(p.rotation) << "\n";
+        std::cout << "canvas:            " << ppp::core::to_string(p.canvas.preset)
+                  << " " << ppp::core::to_string(p.canvas.orientation) << "\n";
+        std::cout << "odd_even_mode:     " << (p.odd_even_mode ? "yes" : "no") << "\n";
+        std::cout << "deskew:            " << (p.deskew.enabled ? "yes" : "no");
+        if (p.deskew.enabled)
+            std::cout << " (" << p.deskew.min_angle << "-" << p.deskew.max_angle << " deg)";
+        std::cout << "\n";
+        std::cout << "despeckle:         " << ppp::core::to_string(p.despeckle.mode) << "\n";
+        std::cout << "edge_cleanup:      " << (p.edge_cleanup.enabled ? "yes" : "no") << "\n";
+        std::cout << "hole_cleanup:      " << (p.hole_cleanup.enabled ? "yes" : "no") << "\n";
+        std::cout << "resize:            " << (p.resize.enabled ? "yes" : "no") << "\n";
+        std::cout << "output:            raster=" << ppp::core::to_string(p.output.raster_format)
+                  << " tiff=" << (p.output.tiff_output ? "yes" : "no")
+                  << " pdf=" << (p.output.pdf_output ? "yes" : "no") << "\n";
+        std::cout << "jpeg_quality:      " << p.output.jpeg_quality << "\n";
+        std::cout << "page_detection:    " << p.page_detection_style_sheet << "\n";
+        return 0;
+    }
+
+    if (command == "profile-validate") {
+        if (argc < 3) {
+            std::cerr << "Usage: ppp_jobctl profile-validate <path>" << std::endl;
+            return 1;
+        }
+        auto profile = ppp::core::read_processing_profile(std::filesystem::path{argv[2]});
+        if (!profile) {
+            std::cerr << "invalid profile: " << argv[2] << std::endl;
+            return 1;
+        }
+        std::cout << "valid" << std::endl;
         return 0;
     }
 
