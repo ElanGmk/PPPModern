@@ -149,6 +149,20 @@ std::string_view to_string(HAlignment alignment) noexcept {
     return "unknown";
 }
 
+std::string_view to_string(DropoutColor color) noexcept {
+    switch (color) {
+    case DropoutColor::None:
+        return "none";
+    case DropoutColor::Red:
+        return "red";
+    case DropoutColor::Green:
+        return "green";
+    case DropoutColor::Blue:
+        return "blue";
+    }
+    return "unknown";
+}
+
 std::string_view to_string(EdgeCleanupOrder order) noexcept {
     switch (order) {
     case EdgeCleanupOrder::BeforeDeskew:
@@ -265,6 +279,15 @@ std::optional<HAlignment> h_alignment_from_string(std::string_view s) noexcept {
     const auto v = normalized(s);
     if (v == "center") return HAlignment::Center;
     if (v == "proportional") return HAlignment::Proportional;
+    return std::nullopt;
+}
+
+std::optional<DropoutColor> dropout_color_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "none") return DropoutColor::None;
+    if (v == "red" || v == "r") return DropoutColor::Red;
+    if (v == "green" || v == "g") return DropoutColor::Green;
+    if (v == "blue" || v == "b") return DropoutColor::Blue;
     return std::nullopt;
 }
 

@@ -4397,6 +4397,168 @@ bool test_morph_close_fills_holes() {
 }
 
 // ---------------------------------------------------------------------------
+// Color dropout tests
+// ---------------------------------------------------------------------------
+
+bool test_color_dropout_red() {
+    using namespace ppp::core;
+
+    // Create 4x1 RGB image: red, green, blue, black pixels.
+    Image img(4, 1, PixelFormat::RGB24, 300.0, 300.0);
+    auto* row = img.row(0);
+    // Pixel 0: pure red (255,0,0) — should be dropped.
+    row[0] = 255; row[1] = 0; row[2] = 0;
+    // Pixel 1: pure green (0,255,0) — should stay.
+    row[3] = 0; row[4] = 255; row[5] = 0;
+    // Pixel 2: pure blue (0,0,255) — should stay.
+    row[6] = 0; row[7] = 0; row[8] = 255;
+    // Pixel 3: black (0,0,0) — should stay.
+    row[9] = 0; row[10] = 0; row[11] = 0;
+
+    ColorDropoutConfig config;
+    config.enabled = true;
+    config.color = DropoutColor::Red;
+    config.threshold = 30;
+
+    auto result = ops::color_dropout(img, config);
+    auto* rrow = result.row(0);
+
+    // Red pixel should become white.
+    if (rrow[0] != 255 || rrow[1] != 255 || rrow[2] != 255) {
+        std::cerr << "color_dropout: red pixel not dropped" << std::endl;
+        return false;
+    }
+    // Green pixel should be unchanged.
+    if (rrow[3] != 0 || rrow[4] != 255 || rrow[5] != 0) {
+        std::cerr << "color_dropout: green pixel was modified" << std::endl;
+        return false;
+    }
+    // Black pixel should be unchanged.
+    if (rrow[9] != 0 || rrow[10] != 0 || rrow[11] != 0) {
+        std::cerr << "color_dropout: black pixel was modified" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_color_dropout_green() {
+    using namespace ppp::core;
+
+    Image img(3, 1, PixelFormat::RGB24, 300.0, 300.0);
+    auto* row = img.row(0);
+    // Pixel 0: red.
+    row[0] = 255; row[1] = 0; row[2] = 0;
+    // Pixel 1: green.
+    row[3] = 0; row[4] = 255; row[5] = 0;
+    // Pixel 2: blue.
+    row[6] = 0; row[7] = 0; row[8] = 255;
+
+    ColorDropoutConfig config;
+    config.enabled = true;
+    config.color = DropoutColor::Green;
+    config.threshold = 30;
+
+    auto result = ops::color_dropout(img, config);
+    auto* rrow = result.row(0);
+
+    // Red pixel should be unchanged.
+    if (rrow[0] != 255 || rrow[1] != 0 || rrow[2] != 0) {
+        std::cerr << "color_dropout green: red pixel was modified" << std::endl;
+        return false;
+    }
+    // Green pixel should become white.
+    if (rrow[3] != 255 || rrow[4] != 255 || rrow[5] != 255) {
+        std::cerr << "color_dropout green: green pixel not dropped" << std::endl;
+        return false;
+    }
+    // Blue pixel should be unchanged.
+    if (rrow[6] != 0 || rrow[7] != 0 || rrow[8] != 255) {
+        std::cerr << "color_dropout green: blue pixel was modified" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_color_dropout_disabled() {
+    using namespace ppp::core;
+
+    Image img(1, 1, PixelFormat::RGB24, 300.0, 300.0);
+    auto* row = img.row(0);
+    row[0] = 255; row[1] = 0; row[2] = 0;  // Pure red.
+
+    ColorDropoutConfig config;
+    config.enabled = false;
+    config.color = DropoutColor::Red;
+    config.threshold = 30;
+
+    auto result = ops::color_dropout(img, config);
+    auto* rrow = result.row(0);
+
+    // Disabled — should be unchanged.
+    if (rrow[0] != 255 || rrow[1] != 0 || rrow[2] != 0) {
+        std::cerr << "color_dropout disabled: pixel was modified" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_color_dropout_bw_passthrough() {
+    using namespace ppp::core;
+
+    Image img(10, 10, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    ColorDropoutConfig config;
+    config.enabled = true;
+    config.color = DropoutColor::Red;
+    config.threshold = 30;
+
+    auto result = ops::color_dropout(img, config);
+
+    // BW1 image should pass through unchanged.
+    if (result.format() != PixelFormat::BW1 || result.width() != 10 || result.height() != 10) {
+        std::cerr << "color_dropout bw: format/size changed" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_color_dropout_config_json() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    profile.color_dropout.enabled = true;
+    profile.color_dropout.color = DropoutColor::Blue;
+    profile.color_dropout.threshold = 42;
+
+    auto json = processing_profile_to_json(profile);
+    auto parsed = processing_profile_from_json(json);
+
+    if (!parsed) {
+        std::cerr << "color_dropout config: JSON round-trip parse failed" << std::endl;
+        return false;
+    }
+    if (!parsed->color_dropout.enabled) {
+        std::cerr << "color_dropout config: enabled lost" << std::endl;
+        return false;
+    }
+    if (parsed->color_dropout.color != DropoutColor::Blue) {
+        std::cerr << "color_dropout config: color lost" << std::endl;
+        return false;
+    }
+    if (parsed->color_dropout.threshold != 42) {
+        std::cerr << "color_dropout config: threshold lost" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Blank page detection tests
 // ---------------------------------------------------------------------------
 
@@ -5435,6 +5597,11 @@ int main() {
         {"binarize_gray8", test_binarize_gray8},
         {"binarize_otsu", test_binarize_otsu},
         {"binarize_already_bw1", test_binarize_already_bw1},
+        {"color_dropout_red", test_color_dropout_red},
+        {"color_dropout_green", test_color_dropout_green},
+        {"color_dropout_disabled", test_color_dropout_disabled},
+        {"color_dropout_bw_passthrough", test_color_dropout_bw_passthrough},
+        {"color_dropout_config_json", test_color_dropout_config_json},
         {"morph_dilate", test_morph_dilate},
         {"morph_dilate_square", test_morph_dilate_square},
         {"morph_erode", test_morph_erode},

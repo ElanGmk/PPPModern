@@ -1026,6 +1026,55 @@ Image morph_close(const Image& image, StructuringElement element, int iterations
 }
 
 // ---------------------------------------------------------------------------
+// Color dropout
+// ---------------------------------------------------------------------------
+
+Image color_dropout(const Image& image, const ColorDropoutConfig& config) {
+    if (!config.enabled || config.color == DropoutColor::None) {
+        return image;
+    }
+
+    // Only meaningful for color images.
+    if (image.format() != PixelFormat::RGB24 && image.format() != PixelFormat::RGBA32) {
+        return image;
+    }
+
+    Image result = image;
+    const auto w = result.width();
+    const auto h = result.height();
+    const int bpp = (result.format() == PixelFormat::RGB24) ? 3 : 4;
+    const auto threshold = static_cast<int>(config.threshold);
+
+    // Channel indices: R=0, G=1, B=2.
+    int target_idx = 0;
+    switch (config.color) {
+    case DropoutColor::Red:   target_idx = 0; break;
+    case DropoutColor::Green: target_idx = 1; break;
+    case DropoutColor::Blue:  target_idx = 2; break;
+    default: return result;
+    }
+    const int other1 = (target_idx + 1) % 3;
+    const int other2 = (target_idx + 2) % 3;
+
+    for (std::int32_t y = 0; y < h; ++y) {
+        auto* row = result.row(y);
+        for (std::int32_t x = 0; x < w; ++x) {
+            auto* px = row + x * bpp;
+            const int t = px[target_idx];
+            const int avg_other = (px[other1] + px[other2]) / 2;
+            if (t - avg_other > threshold) {
+                px[0] = 0xFF;
+                px[1] = 0xFF;
+                px[2] = 0xFF;
+                if (bpp == 4) px[3] = 0xFF;
+            }
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Histogram
 // ---------------------------------------------------------------------------
 

@@ -254,6 +254,13 @@ ProcessingResult run_pipeline(const Image& image,
     // 1. Rotation.
     result.steps.push_back(step_rotate(img, profile.rotation));
 
+    // 1b. Color dropout.
+    if (profile.color_dropout.enabled && profile.color_dropout.color != DropoutColor::None) {
+        img = ops::color_dropout(img, profile.color_dropout);
+        result.steps.push_back({"color_dropout", true,
+            std::string("dropped ") + std::string(to_string(profile.color_dropout.color))});
+    }
+
     // 2. Edge cleanup (before deskew).
     if (profile.edge_cleanup.order == EdgeCleanupOrder::BeforeDeskew) {
         result.steps.push_back(step_edge_cleanup(
@@ -353,6 +360,14 @@ ProcessingResult run_step(const Image& image,
 
     if (step_name == "rotate") {
         result.steps.push_back(step_rotate(img, profile.rotation));
+    } else if (step_name == "color_dropout") {
+        if (profile.color_dropout.enabled && profile.color_dropout.color != DropoutColor::None) {
+            img = ops::color_dropout(img, profile.color_dropout);
+            result.steps.push_back({"color_dropout", true,
+                std::string("dropped ") + std::string(to_string(profile.color_dropout.color))});
+        } else {
+            result.steps.push_back({"color_dropout", false, "disabled"});
+        }
     } else if (step_name == "edge_cleanup") {
         result.steps.push_back(step_edge_cleanup(
             img, profile.edge_cleanup, page_index, profile.odd_even_mode));

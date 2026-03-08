@@ -243,6 +243,15 @@ void write_blank_page_config(JsonWriter& w, std::string_view k, const BlankPageC
     w.end_object();
 }
 
+void write_color_dropout_config(JsonWriter& w, std::string_view k, const ColorDropoutConfig& cd) {
+    w.key(k);
+    w.begin_object();
+    w.kv("enabled", cd.enabled);
+    w.kv("color", to_string(cd.color));
+    w.kv("threshold", static_cast<std::int32_t>(cd.threshold));
+    w.end_object();
+}
+
 void write_movement_limit_config(JsonWriter& w, std::string_view k, const MovementLimitConfig& ml) {
     w.key(k);
     w.begin_object();
@@ -671,6 +680,22 @@ template <typename Fn>
     });
 }
 
+[[nodiscard]] bool parse_color_dropout_config(JsonParser& p, ColorDropoutConfig& cd) {
+    return parse_object(p, [&](const std::string& k) -> bool {
+        if (k == "enabled") { auto v = parse_bool(p); if (!v) return false; cd.enabled = *v; return true; }
+        if (k == "color") {
+            auto v = parse_string(p);
+            if (!v) return false;
+            auto c = dropout_color_from_string(*v);
+            if (!c) return false;
+            cd.color = *c;
+            return true;
+        }
+        if (k == "threshold") { auto v = parse_integer(p); if (!v) return false; cd.threshold = static_cast<std::uint8_t>(*v); return true; }
+        return skip_value(p);
+    });
+}
+
 [[nodiscard]] bool parse_movement_limit_config(JsonParser& p, MovementLimitConfig& ml) {
     return parse_object(p, [&](const std::string& k) -> bool {
         if (k == "enabled") { auto v = parse_bool(p); if (!v) return false; ml.enabled = *v; return true; }
@@ -853,6 +878,7 @@ std::string processing_profile_to_json(const ProcessingProfile& profile) {
     write_hole_cleanup_config(w, "hole_cleanup", profile.hole_cleanup);
     write_subimage_config(w, "subimage", profile.subimage);
     write_blank_page_config(w, "blank_page", profile.blank_page);
+    write_color_dropout_config(w, "color_dropout", profile.color_dropout);
     write_movement_limit_config(w, "movement_limit", profile.movement_limit);
     write_resize_config(w, "resize", profile.resize);
     write_output_config(w, "output", profile.output);
@@ -903,6 +929,7 @@ std::optional<ProcessingProfile> processing_profile_from_json(std::string_view j
         if (k == "hole_cleanup") return parse_hole_cleanup_config(p, profile.hole_cleanup);
         if (k == "subimage") return parse_subimage_config(p, profile.subimage);
         if (k == "blank_page") return parse_blank_page_config(p, profile.blank_page);
+        if (k == "color_dropout") return parse_color_dropout_config(p, profile.color_dropout);
         if (k == "movement_limit") return parse_movement_limit_config(p, profile.movement_limit);
         if (k == "resize") return parse_resize_config(p, profile.resize);
         if (k == "output") return parse_output_config(p, profile.output);

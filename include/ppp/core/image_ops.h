@@ -319,6 +319,25 @@ void erode(Image& image, StructuringElement element = StructuringElement::Square
                                  int iterations = 1);
 
 // ---------------------------------------------------------------------------
+// Color dropout — remove a color channel before binarization
+// ---------------------------------------------------------------------------
+
+/// Apply color dropout to an RGB/RGBA image.
+///
+/// For each pixel, if the target color channel dominates (its value minus the
+/// average of the other two channels exceeds the threshold), the pixel is set
+/// to white.  This removes pre-printed colored form lines/backgrounds while
+/// preserving black content.
+///
+/// Returns the modified image.  BW1/Gray8 inputs are returned unchanged.
+///
+/// @param image    Source image (RGB24 or RGBA32 for meaningful results).
+/// @param config   Color dropout configuration.
+/// @return Image with the specified color removed.
+[[nodiscard]] Image color_dropout(const Image& image,
+                                   const ColorDropoutConfig& config);
+
+// ---------------------------------------------------------------------------
 // Histogram and auto-threshold
 // ---------------------------------------------------------------------------
 

@@ -93,6 +93,14 @@ enum class HAlignment : std::uint8_t {
     Proportional = 4
 };
 
+/// Color channel to drop out (remove) before binarization.
+enum class DropoutColor : std::uint8_t {
+    None = 0,
+    Red = 1,
+    Green = 2,
+    Blue = 3
+};
+
 /// How to handle output file conflicts.
 enum class ConflictPolicy : std::uint8_t {
     Report = 0,
@@ -242,6 +250,18 @@ struct BlankPageConfig {
     /// Edge margin to ignore when computing blank page metrics.  Helps
     /// exclude scanner artifacts at the edges.
     Measurement edge_margin{0.0, MeasurementUnit::Inches};
+};
+
+// ---------------------------------------------------------------------------
+// Color dropout
+// ---------------------------------------------------------------------------
+
+struct ColorDropoutConfig {
+    bool enabled{false};
+    DropoutColor color{DropoutColor::None};
+    /// Saturation threshold (0–255).  A pixel is dropped when its target
+    /// channel dominance (target minus average of other two) exceeds this.
+    std::uint8_t threshold{30};
 };
 
 // ---------------------------------------------------------------------------
@@ -398,6 +418,7 @@ struct ProcessingProfile {
     HoleCleanupConfig hole_cleanup;
     SubimageConfig subimage;
     BlankPageConfig blank_page;
+    ColorDropoutConfig color_dropout;
     MovementLimitConfig movement_limit;
 
     // Resize
@@ -430,6 +451,7 @@ struct ProcessingProfile {
 [[nodiscard]] std::string_view to_string(ResizeFrom source) noexcept;
 [[nodiscard]] std::string_view to_string(VAlignment alignment) noexcept;
 [[nodiscard]] std::string_view to_string(HAlignment alignment) noexcept;
+[[nodiscard]] std::string_view to_string(DropoutColor color) noexcept;
 [[nodiscard]] std::string_view to_string(EdgeCleanupOrder order) noexcept;
 [[nodiscard]] std::string_view to_string(ConflictPolicy policy) noexcept;
 [[nodiscard]] std::string_view to_string(PathMode mode) noexcept;
@@ -444,6 +466,7 @@ struct ProcessingProfile {
 [[nodiscard]] std::optional<ResizeFrom> resize_from_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<VAlignment> v_alignment_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<HAlignment> h_alignment_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<DropoutColor> dropout_color_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<EdgeCleanupOrder> edge_cleanup_order_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<ConflictPolicy> conflict_policy_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<PathMode> path_mode_from_string(std::string_view s) noexcept;
