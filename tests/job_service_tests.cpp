@@ -7,6 +7,7 @@
 #include "ppp/core/scheduling_policy.h"
 #include "ppp/core/scheduling_policy_io.h"
 #include "ppp/core/tiff.h"
+#include "ppp/core/geometry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2525,6 +2526,238 @@ bool test_tiff_big_endian() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Geometry tests
+// ---------------------------------------------------------------------------
+
+bool test_geometry_rect_basics() {
+    using namespace ppp::core::geometry;
+
+    Rect r{10, 20, 110, 70};
+    if (r.width() != 100) return false;
+    if (r.height() != 50) return false;
+    if (r.area() != 5000) return false;
+    if (r.empty()) return false;
+
+    // Empty rect.
+    Rect e{5, 5, 5, 10};
+    if (!e.empty()) return false;
+    if (e.area() != 0) return false;
+
+    // Contains point.
+    if (!r.contains(10, 20)) return false;
+    if (r.contains(110, 70)) return false;  // Exclusive boundary.
+    if (r.contains(9, 20)) return false;
+
+    // Contains rect.
+    Rect inner{20, 30, 50, 50};
+    if (!r.contains(inner)) return false;
+    if (inner.contains(r)) return false;
+
+    // Intersection.
+    Rect a{0, 0, 50, 50};
+    Rect b{25, 25, 75, 75};
+    auto isect = a.intersection(b);
+    if (isect != Rect{25, 25, 50, 50}) return false;
+
+    // Non-intersecting.
+    Rect c{100, 100, 200, 200};
+    if (a.intersects(c)) return false;
+    if (!a.intersection(c).empty()) return false;
+
+    // Union.
+    auto u = a.united(b);
+    if (u != Rect{0, 0, 75, 75}) return false;
+
+    // Inflate / offset.
+    Rect m{10, 10, 20, 20};
+    m.inflate(5, 5);
+    if (m != Rect{5, 5, 25, 25}) return false;
+    m.offset(10, 10);
+    if (m != Rect{15, 15, 35, 35}) return false;
+
+    return true;
+}
+
+bool test_geometry_combinable() {
+    using namespace ppp::core::geometry;
+
+    // Two adjacent non-overlapping rects with no gap are combinable with 0 tolerance.
+    Rect a{0, 0, 10, 10};
+    Rect b{10, 0, 20, 10};
+    // Union area = 200, sum = 100 + 100 = 200.
+    if (!combinable(a, b, 0)) return false;
+
+    // With a gap — not combinable without tolerance.
+    Rect c{15, 0, 25, 10};
+    // Union = {0,0,25,10} = 250, sum = 200. 250 > 200.
+    if (combinable(a, c, 0)) return false;
+    // But with enough tolerance.
+    if (!combinable(a, c, 50)) return false;
+
+    return true;
+}
+
+bool test_geometry_sort() {
+    using namespace ppp::core::geometry;
+
+    std::vector<Rect> rects = {
+        {30, 10, 40, 20},
+        {10, 30, 20, 40},
+        {50, 50, 60, 60},
+        {10, 10, 20, 20},
+    };
+
+    // Top-to-bottom.
+    auto v = rects;
+    sort_rects(v, SortAxis::TopToBottom);
+    if (v[0].top != 10 || v[0].left != 10) return false;  // {10,10} and {30,10} tied, left wins
+    if (v[1].left != 30) return false;
+    if (v[2].top != 30) return false;
+    if (v[3].top != 50) return false;
+
+    // Left-to-right.
+    v = rects;
+    sort_rects(v, SortAxis::LeftToRight);
+    if (v[0].left != 10) return false;
+    if (v[2].left != 30) return false;
+    if (v[3].left != 50) return false;
+
+    // Bottom-to-top.
+    v = rects;
+    sort_rects(v, SortAxis::BottomToTop);
+    if (v[0].bottom != 60) return false;
+    if (v[3].bottom != 20) return false;
+
+    return true;
+}
+
+bool test_geometry_banding() {
+    using namespace ppp::core::geometry;
+
+    // Three rects: two in the same horizontal band, one below.
+    std::vector<Rect> rects = {
+        {0, 0, 10, 10},
+        {20, 2, 30, 12},
+        {5, 50, 15, 60},
+    };
+
+    auto bands = band_rects(rects, BandDirection::Horizontal);
+    if (bands.size() != 2) { std::cerr << "expected 2 bands, got " << bands.size() << std::endl; return false; }
+    if (bands[0].size() != 2) return false;  // First band has 2 rects.
+    if (bands[1].size() != 1) return false;  // Second band has 1 rect.
+    // Within band, sorted by left.
+    if (bands[0][0].left != 0) return false;
+    if (bands[0][1].left != 20) return false;
+
+    // Vertical banding.
+    std::vector<Rect> rects2 = {
+        {0, 0, 10, 10},
+        {2, 20, 12, 30},
+        {50, 5, 60, 15},
+    };
+    auto vbands = band_rects(rects2, BandDirection::Vertical);
+    if (vbands.size() != 2) return false;
+    if (vbands[0].size() != 2) return false;
+    if (vbands[1].size() != 1) return false;
+
+    return true;
+}
+
+bool test_geometry_spans_from_bitmap() {
+    using namespace ppp::core::geometry;
+
+    // 16x2 bitmap, 2 bytes per row, no padding.
+    // Row 0: 0xFF 0x00 → bits 0..7 foreground, 8..15 background.
+    // Row 1: 0x00 0xF0 → bits 0..7 background, 8..11 foreground, 12..15 background.
+    std::uint8_t data[] = {
+        0xFF, 0x00,
+        0x00, 0xF0,
+    };
+
+    auto spans = spans_from_bitmap(data, 16, 2, 2, 1);
+    if (spans.size() != 2) { std::cerr << "expected 2 spans, got " << spans.size() << std::endl; return false; }
+
+    // Row 0: cols 0..8.
+    if (spans[0].row != 0 || spans[0].col_start != 0 || spans[0].col_end != 8) {
+        std::cerr << "span[0]: row=" << spans[0].row << " start=" << spans[0].col_start << " end=" << spans[0].col_end << std::endl;
+        return false;
+    }
+
+    // Row 1: cols 8..12.
+    if (spans[1].row != 1 || spans[1].col_start != 8 || spans[1].col_end != 12) {
+        std::cerr << "span[1]: row=" << spans[1].row << " start=" << spans[1].col_start << " end=" << spans[1].col_end << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_geometry_connected_components() {
+    using namespace ppp::core::geometry;
+
+    // Build a simple 8x4 binary image with two separate blobs:
+    //   Row 0: XX......
+    //   Row 1: XX......
+    //   Row 2: ......XX
+    //   Row 3: ......XX
+    std::vector<Span> spans = {
+        {0, 0, 2},
+        {1, 0, 2},
+        {2, 6, 8},
+        {3, 6, 8},
+    };
+
+    Rect roi{0, 0, 8, 4};
+    auto comps = find_components(spans, roi, 4);
+    if (comps.size() != 2) { std::cerr << "expected 2 components, got " << comps.size() << std::endl; return false; }
+
+    // Sort by left edge for deterministic checking.
+    std::sort(comps.begin(), comps.end(),
+              [](const Component& a, const Component& b) { return a.bounds.left < b.bounds.left; });
+
+    if (comps[0].bounds != Rect{0, 0, 2, 2}) {
+        std::cerr << "comp[0] bounds mismatch" << std::endl; return false;
+    }
+    if (comps[0].pixel_count != 4) return false;
+
+    if (comps[1].bounds != Rect{6, 2, 8, 4}) {
+        std::cerr << "comp[1] bounds mismatch" << std::endl; return false;
+    }
+    if (comps[1].pixel_count != 4) return false;
+
+    // Test 8-connectivity: diagonal spans should merge.
+    std::vector<Span> diag_spans = {
+        {0, 0, 2},
+        {1, 2, 4},  // Diagonally adjacent to row 0 span.
+    };
+    auto comps4 = find_components(diag_spans, {0, 0, 10, 10}, 4);
+    auto comps8 = find_components(diag_spans, {0, 0, 10, 10}, 8);
+    if (comps4.size() != 2) { std::cerr << "4-conn: expected 2 components for diagonal" << std::endl; return false; }
+    if (comps8.size() != 1) { std::cerr << "8-conn: expected 1 component for diagonal" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_geometry_connected_components_roi() {
+    using namespace ppp::core::geometry;
+
+    // Single blob spanning full width, but ROI clips it.
+    std::vector<Span> spans = {
+        {0, 0, 100},
+        {1, 0, 100},
+    };
+
+    // ROI only covers left half.
+    Rect roi{0, 0, 50, 2};
+    auto comps = find_components(spans, roi, 4);
+    if (comps.size() != 1) return false;
+    if (comps[0].bounds.right != 50) return false;
+    if (comps[0].pixel_count != 100) return false;  // 50 * 2 rows.
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -2563,6 +2796,13 @@ int main() {
         {"tiff_ifd_accessors", test_tiff_ifd_accessors},
         {"tiff_invalid_data", test_tiff_invalid_data},
         {"tiff_big_endian", test_tiff_big_endian},
+        {"geometry_rect_basics", test_geometry_rect_basics},
+        {"geometry_combinable", test_geometry_combinable},
+        {"geometry_sort", test_geometry_sort},
+        {"geometry_banding", test_geometry_banding},
+        {"geometry_spans_from_bitmap", test_geometry_spans_from_bitmap},
+        {"geometry_connected_components", test_geometry_connected_components},
+        {"geometry_connected_components_roi", test_geometry_connected_components_roi},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);
