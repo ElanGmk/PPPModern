@@ -442,6 +442,71 @@ HWND create_button(HWND parent, HINSTANCE inst, HFONT font,
     return hw;
 }
 
+// Helper: create a checkbox.
+HWND create_checkbox(HWND parent, HINSTANCE inst, HFONT font,
+                      const wchar_t* text, int x, int y, int w, int h, UINT id,
+                      bool checked = false) {
+    HWND hw = CreateWindowExW(0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        x, y, w, h, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+    set_ui_font(hw, font);
+    if (checked) SendMessageW(hw, BM_SETCHECK, BST_CHECKED, 0);
+    return hw;
+}
+
+// Helper: create a radio button.
+HWND create_radio(HWND parent, HINSTANCE inst, HFONT font,
+                   const wchar_t* text, int x, int y, int w, int h, UINT id,
+                   bool group = false, bool checked = false) {
+    DWORD style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP;
+    if (group) style |= WS_GROUP;
+    HWND hw = CreateWindowExW(0, L"BUTTON", text, style,
+        x, y, w, h, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+    set_ui_font(hw, font);
+    if (checked) SendMessageW(hw, BM_SETCHECK, BST_CHECKED, 0);
+    return hw;
+}
+
+// Helper: create a combo box.
+HWND create_combo(HWND parent, HINSTANCE inst, HFONT font,
+                   int x, int y, int w, int h, UINT id,
+                   std::initializer_list<const wchar_t*> items, int sel = 0) {
+    HWND hw = CreateWindowExW(0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        x, y, w, h, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+    set_ui_font(hw, font);
+    for (auto* s : items)
+        SendMessageW(hw, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+    SendMessageW(hw, CB_SETCURSEL, sel, 0);
+    return hw;
+}
+
+// Helper: create a text edit.
+HWND create_edit(HWND parent, HINSTANCE inst, HFONT font,
+                  int x, int y, int w, int h, UINT id,
+                  const wchar_t* text = L"", bool readonly = false) {
+    DWORD style = WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP;
+    if (readonly) style |= ES_READONLY;
+    HWND hw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text, style,
+        x, y, w, h, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+    set_ui_font(hw, font);
+    return hw;
+}
+
+// Helper: create a group box.
+HWND create_groupbox(HWND parent, HINSTANCE inst, HFONT font,
+                      const wchar_t* text, int x, int y, int w, int h) {
+    HWND hw = CreateWindowExW(0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+        x, y, w, h, parent, nullptr, inst, nullptr);
+    set_ui_font(hw, font);
+    return hw;
+}
+
 // ---------------------------------------------------------------------------
 // Image → HBITMAP conversion (RGB→BGR swap for GDI)
 // ---------------------------------------------------------------------------
@@ -1155,39 +1220,315 @@ void switch_js_sub_tab(AppState& state, int sub_index) {
 // ---------------------------------------------------------------------------
 
 void create_tab_page_setup(AppState& state) {
-    HWND parent = state.hwnd_tab_pages[kTabPageSetup];
-    create_label(parent, state.hinstance, state.hfont_ui,
-                 L"Page Setup controls (coming soon)", 10, 10, 300, 20);
+    HWND p = state.hwnd_tab_pages[kTabPageSetup];
+    auto i = state.hinstance;
+    auto f = state.hfont_ui;
+    int y = 4;
+
+    // --- Page content detection ---
+    create_checkbox(p, i, f, L"Page content detection", 8, y, 180, 18,
+                    IDC_PS_DETECT_CHECK, true);
+    y += 22;
+
+    // General unit radio buttons.
+    create_label(p, i, f, L"General unit:", 8, y + 2, 75, 16);
+    create_radio(p, i, f, L"Pixels", 88, y, 60, 18, IDC_PS_UNIT_PIXELS, true);
+    create_radio(p, i, f, L"Inches", 152, y, 60, 18, IDC_PS_UNIT_INCHES, false, true);
+    create_radio(p, i, f, L"mm", 216, y, 40, 18, IDC_PS_UNIT_MM);
+    y += 24;
+
+    // Detected image info (read-only).
+    create_label(p, i, f, L"Detected image size:", 8, y + 2, 120, 16);
+    create_edit(p, i, f, 132, y, 60, 22, IDC_PS_DETECTED_W, L"", true);
+    create_label(p, i, f, L"\x00D7", 196, y + 2, 12, 16);  // ×
+    create_edit(p, i, f, 210, y, 60, 22, IDC_PS_DETECTED_H, L"", true);
+    y += 26;
+
+    create_label(p, i, f, L"Image resolution:", 8, y + 2, 100, 16);
+    create_edit(p, i, f, 132, y, 60, 22, IDC_PS_DPI, L"", true);
+    create_label(p, i, f, L"DPI", 196, y + 2, 30, 16);
+    y += 30;
+
+    // --- Maximum subimage size ---
+    create_groupbox(p, i, f, L"Maximum subimage size", 8, y, 160, 56);
+    create_label(p, i, f, L"W:", 18, y + 18, 18, 16);
+    create_edit(p, i, f, 36, y + 16, 50, 22, IDC_PS_SUBIMAGE_W);
+    create_label(p, i, f, L"H:", 94, y + 18, 18, 16);
+    create_edit(p, i, f, 112, y + 16, 50, 22, IDC_PS_SUBIMAGE_H);
+
+    // --- Output canvas (right column) ---
+    int cx = 178;
+    create_groupbox(p, i, f, L"Output canvas", cx, y, 168, 200);
+    int cy = y + 16;
+    create_checkbox(p, i, f, L"Keep original image size", cx + 8, cy, 155, 18,
+                    IDC_PS_KEEP_ORIGINAL);
+    cy += 20;
+
+    create_label(p, i, f, L"Set canvas size:", cx + 8, cy + 2, 90, 16);
+    cy += 18;
+    create_edit(p, i, f, cx + 8, cy, 50, 22, IDC_PS_CANVAS_W, L"8.5");
+    create_label(p, i, f, L"\x00D7", cx + 62, cy + 2, 12, 16);
+    create_edit(p, i, f, cx + 76, cy, 50, 22, IDC_PS_CANVAS_H, L"11.0");
+    cy += 26;
+
+    // Canvas presets.
+    create_radio(p, i, f, L"Autodetect", cx + 8, cy, 80, 16, IDC_PS_CANVAS_AUTODETECT, true);
+    cy += 16;
+    create_radio(p, i, f, L"Letter 8.5\"x11\"", cx + 8, cy, 120, 16, IDC_PS_CANVAS_LETTER, false, true);
+    cy += 16;
+    create_radio(p, i, f, L"Legal 8.5\"x14\"", cx + 8, cy, 120, 16, IDC_PS_CANVAS_LEGAL);
+    cy += 16;
+    create_radio(p, i, f, L"Tabloid 11\"x17\"", cx + 8, cy, 120, 16, IDC_PS_CANVAS_TABLOID);
+    cy += 16;
+    create_radio(p, i, f, L"A4 210x297mm", cx + 8, cy, 120, 16, IDC_PS_CANVAS_A4);
+    cy += 16;
+    create_radio(p, i, f, L"A3 297x420mm", cx + 8, cy, 120, 16, IDC_PS_CANVAS_A3);
+    cy += 16;
+    create_radio(p, i, f, L"Custom", cx + 8, cy, 80, 16, IDC_PS_CANVAS_CUSTOM);
+    cy += 20;
+
+    // Orientation.
+    create_label(p, i, f, L"Orientation:", cx + 8, cy + 2, 65, 16);
+    create_radio(p, i, f, L"Portrait", cx + 76, cy, 65, 16, IDC_PS_ORIENT_PORTRAIT, true, true);
+    create_radio(p, i, f, L"Landscape", cx + 142, cy - 1, 80, 18, IDC_PS_ORIENT_LANDSCAPE);
+
+    // --- Page rotation (below subimage group) ---
+    y += 62;
+    create_groupbox(p, i, f, L"Page rotation", 8, y, 160, 80);
+    create_checkbox(p, i, f, L"Turn image first", 18, y + 18, 130, 18, IDC_PS_TURN_CHECK);
+    create_radio(p, i, f, L"+90\x00B0", 18, y + 38, 50, 16, IDC_PS_TURN_CW, true, true);
+    create_radio(p, i, f, L"-90\x00B0", 72, y + 38, 50, 16, IDC_PS_TURN_CCW);
+    create_radio(p, i, f, L"180\x00B0", 126, y + 38, 50, 16, IDC_PS_TURN_180);
+    y += 86;
+
+    // Keep contents outside subimage.
+    create_checkbox(p, i, f, L"Keep contents outside detected subimage", 8, y, 250, 18,
+                    IDC_PS_KEEP_OUTSIDE);
+    y += 24;
+
+    // --- Max subimage movement ---
+    create_groupbox(p, i, f, L"Max subimage movement", 8, y, 160, 64);
+    create_checkbox(p, i, f, L"Report max movement", 18, y + 16, 140, 18, IDC_PS_REPORT_MOV);
+    create_label(p, i, f, L"H:", 18, y + 38, 16, 16);
+    create_edit(p, i, f, 34, y + 36, 44, 22, IDC_PS_MAX_HMOV, L"4.0");
+    create_label(p, i, f, L"V:", 86, y + 38, 16, 16);
+    create_edit(p, i, f, 102, y + 36, 44, 22, IDC_PS_MAX_VMOV, L"6.0");
 }
 
 // ---------------------------------------------------------------------------
-// Tab 3: Margin Setup (placeholder)
+// Tab 3: Margin Setup
 // ---------------------------------------------------------------------------
 
 void create_tab_margin_setup(AppState& state) {
-    HWND parent = state.hwnd_tab_pages[kTabMarginSetup];
-    create_label(parent, state.hinstance, state.hfont_ui,
-                 L"Margin Setup controls (coming soon)", 10, 10, 300, 20);
+    HWND p = state.hwnd_tab_pages[kTabMarginSetup];
+    auto i = state.hinstance;
+    auto f = state.hfont_ui;
+    int y = 4;
+
+    // Margin type: Simple / Odd-Even.
+    create_groupbox(p, i, f, L"Margins", 8, y, 330, 340);
+    y += 18;
+
+    create_radio(p, i, f, L"Simple", 18, y, 60, 18, IDC_MS_SIMPLE_RADIO, true, true);
+    create_radio(p, i, f, L"Odd-Even", 84, y, 70, 18, IDC_MS_ODDEVEN_RADIO);
+
+    // Verso/Recto sub-tab.
+    auto hw_vr = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_BOTTOM,
+        18, y + 22, 310, 24, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_MS_VERSO_RECTO_TAB)),
+        i, nullptr);
+    set_ui_font(hw_vr, f);
+    TCITEMW vr{};
+    vr.mask = TCIF_TEXT;
+    vr.pszText = const_cast<wchar_t*>(L"Verso (odd)");
+    SendMessageW(hw_vr, TCM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&vr));
+    vr.pszText = const_cast<wchar_t*>(L"Recto (even)");
+    SendMessageW(hw_vr, TCM_INSERTITEMW, 1, reinterpret_cast<LPARAM>(&vr));
+    y += 50;
+
+    // Margin edge fields with Set/Check radio.
+    auto add_margin_row = [&](const wchar_t* label, int ey, UINT edit_id,
+                               UINT set_id, UINT check_id) {
+        create_label(p, i, f, label, 18, ey + 2, 50, 16);
+        create_edit(p, i, f, 70, ey, 60, 22, edit_id, L"0.000");
+        create_radio(p, i, f, L"Set", 138, ey + 2, 40, 16, set_id, true, true);
+        create_radio(p, i, f, L"Check", 182, ey + 2, 55, 16, check_id);
+    };
+
+    add_margin_row(L"Top:", y, IDC_MS_TOP_EDIT, IDC_MS_TOP_SET, IDC_MS_TOP_CHECK);
+    y += 26;
+    add_margin_row(L"Left:", y, IDC_MS_LEFT_EDIT, IDC_MS_LEFT_SET, IDC_MS_LEFT_CHECK);
+    y += 26;
+    add_margin_row(L"Right:", y, IDC_MS_RIGHT_EDIT, IDC_MS_RIGHT_SET, IDC_MS_RIGHT_CHECK);
+    y += 26;
+    add_margin_row(L"Bottom:", y, IDC_MS_BOTTOM_EDIT, IDC_MS_BOTTOM_SET, IDC_MS_BOTTOM_CHECK);
+    y += 32;
+
+    // Mirror margins button.
+    create_button(p, i, f, L"Mirror Margins", 18, y, 100, 24, IDC_MS_MIRROR_BTN);
+    y += 32;
+
+    // Alignment group.
+    create_groupbox(p, i, f, L"Alignment", 18, y, 310, 70);
+    y += 16;
+    create_label(p, i, f, L"Horizontal:", 28, y + 2, 65, 16);
+    create_radio(p, i, f, L"Keep", 98, y, 48, 16, IDC_MS_KEEP_H, true, true);
+    create_radio(p, i, f, L"Center", 150, y, 55, 16, IDC_MS_CENTER_H);
+    create_radio(p, i, f, L"To margin", 210, y, 75, 16, IDC_MS_TO_MARGIN_H);
+    y += 18;
+    create_label(p, i, f, L"Vertical:", 28, y + 2, 55, 16);
+    create_radio(p, i, f, L"Keep", 98, y, 48, 16, IDC_MS_KEEP_V, true, true);
+    create_radio(p, i, f, L"Center", 150, y, 55, 16, IDC_MS_CENTER_V);
+    create_radio(p, i, f, L"To margin", 210, y, 75, 16, IDC_MS_TO_MARGIN_V);
 }
 
 // ---------------------------------------------------------------------------
-// Tab 4: Cleanup (placeholder)
+// Tab 4: Cleanup
 // ---------------------------------------------------------------------------
 
 void create_tab_cleanup(AppState& state) {
-    HWND parent = state.hwnd_tab_pages[kTabCleanup];
-    create_label(parent, state.hinstance, state.hfont_ui,
-                 L"Cleanup controls (coming soon)", 10, 10, 300, 20);
+    HWND p = state.hwnd_tab_pages[kTabCleanup];
+    auto i = state.hinstance;
+    auto f = state.hfont_ui;
+    int y = 4;
+
+    // --- Despeckle ---
+    create_groupbox(p, i, f, L"Despeckle", 8, y, 330, 74);
+    create_radio(p, i, f, L"No speckle removal", 18, y + 16, 140, 16,
+                 IDC_CL_DESPECKLE_NONE, true, true);
+    create_radio(p, i, f, L"Single speckle removal", 18, y + 34, 150, 16,
+                 IDC_CL_DESPECKLE_SINGLE);
+    create_radio(p, i, f, L"Remove objects between", 18, y + 52, 155, 16,
+                 IDC_CL_DESPECKLE_OBJECTS);
+    create_edit(p, i, f, 178, y + 50, 35, 22, IDC_CL_DESPECKLE_MIN, L"1");
+    create_label(p, i, f, L"and", 217, y + 52, 22, 16);
+    create_edit(p, i, f, 242, y + 50, 35, 22, IDC_CL_DESPECKLE_MAX, L"10");
+    create_label(p, i, f, L"pixels", 281, y + 52, 40, 16);
+    y += 80;
+
+    // --- Deskew ---
+    create_groupbox(p, i, f, L"Deskew", 8, y, 330, 120);
+    create_checkbox(p, i, f, L"Deskew", 18, y + 16, 80, 18, IDC_CL_DESKEW_CHECK);
+    create_checkbox(p, i, f, L"Interpolated rotation", 18, y + 36, 145, 18, IDC_CL_DESKEW_INTERP);
+    create_checkbox(p, i, f, L"Character protection", 18, y + 56, 140, 18, IDC_CL_DESKEW_CHARPROTECT);
+
+    create_label(p, i, f, L"Algorithm:", 18, y + 78, 60, 16);
+    create_combo(p, i, f, 82, y + 76, 130, 120, IDC_CL_DESKEW_ALG_COMBO,
+                 {L"Primary", L"Text then Line", L"Line then Text", L"Alternative"});
+
+    create_label(p, i, f, L"Min:", 220, y + 78, 28, 16);
+    create_edit(p, i, f, 248, y + 76, 35, 22, IDC_CL_DESKEW_MIN, L"0.05");
+    create_label(p, i, f, L"Max:", 220, y + 98, 28, 16);
+    create_edit(p, i, f, 248, y + 96, 35, 22, IDC_CL_DESKEW_MAX, L"3.0");
+    create_label(p, i, f, L"\x00B0", 286, y + 78, 12, 16);
+    create_label(p, i, f, L"\x00B0", 286, y + 98, 12, 16);
+    y += 126;
+
+    // --- Edge cleanup ---
+    create_groupbox(p, i, f, L"Edge cleanup", 8, y, 160, 110);
+    create_checkbox(p, i, f, L"Remove everything within", 18, y + 16, 145, 18,
+                    IDC_CL_EDGE_CHECK);
+    create_radio(p, i, f, L"Before deskew", 18, y + 36, 100, 16,
+                 IDC_CL_EDGE_BEFORE_DESKEW, true, true);
+    create_radio(p, i, f, L"After deskew", 18, y + 52, 100, 16,
+                 IDC_CL_EDGE_AFTER_DESKEW);
+
+    create_label(p, i, f, L"Top:", 18, y + 72, 28, 16);
+    create_combo(p, i, f, 50, y + 70, 46, 120, IDC_CL_EDGE_TOP, {L"0.0", L"0.25", L"0.5", L"1.0"});
+    create_label(p, i, f, L"Left:", 100, y + 72, 28, 16);
+    create_combo(p, i, f, 128, y + 70, 28, 120, IDC_CL_EDGE_LEFT, {L"0.0", L"0.25", L"0.5"});
+    create_label(p, i, f, L"Right:", 18, y + 90, 32, 16);
+    create_combo(p, i, f, 50, y + 88, 46, 120, IDC_CL_EDGE_RIGHT, {L"0.0", L"0.25", L"0.5", L"1.0"});
+    create_label(p, i, f, L"Bot:", 100, y + 90, 28, 16);
+    create_combo(p, i, f, 128, y + 88, 28, 120, IDC_CL_EDGE_BOTTOM, {L"0.0", L"0.25", L"0.5"});
+
+    // --- Punch hole removal (right of edge cleanup) ---
+    create_groupbox(p, i, f, L"Punch hole removal", 178, y, 160, 110);
+    create_checkbox(p, i, f, L"Remove punch holes", 188, y + 16, 140, 18,
+                    IDC_CL_HOLE_CHECK);
+
+    create_label(p, i, f, L"Top:", 188, y + 40, 28, 16);
+    create_combo(p, i, f, 218, y + 38, 46, 120, IDC_CL_HOLE_TOP, {L"0.0", L"0.5", L"1.0", L"1.5"});
+    create_label(p, i, f, L"Left:", 270, y + 40, 28, 16);
+    create_combo(p, i, f, 298, y + 38, 28, 120, IDC_CL_HOLE_LEFT, {L"0.0", L"0.5", L"1.0"});
+    create_label(p, i, f, L"Right:", 188, y + 58, 32, 16);
+    create_combo(p, i, f, 218, y + 56, 46, 120, IDC_CL_HOLE_RIGHT, {L"0.0", L"0.5", L"1.0", L"1.5"});
+    create_label(p, i, f, L"Bot:", 270, y + 58, 28, 16);
+    create_combo(p, i, f, 298, y + 56, 28, 120, IDC_CL_HOLE_BOTTOM, {L"0.0", L"0.5", L"1.0"});
+    y += 116;
+
+    // --- Report in Exception List if... ---
+    create_groupbox(p, i, f, L"Report in Exception List if...", 8, y, 330, 66);
+    create_checkbox(p, i, f, L"Subimage is less than", 18, y + 16, 145, 18,
+                    IDC_CL_REPORT_SUBIMAGE);
+    create_label(p, i, f, L"W:", 168, y + 18, 18, 16);
+    create_edit(p, i, f, 186, y + 16, 40, 22, IDC_CL_REPORT_W, L"20");
+    create_label(p, i, f, L"H:", 232, y + 18, 18, 16);
+    create_edit(p, i, f, 250, y + 16, 40, 22, IDC_CL_REPORT_H, L"20");
+    create_label(p, i, f, L"pixels", 294, y + 18, 35, 16);
+    create_checkbox(p, i, f, L"Unable to detect skew", 18, y + 40, 160, 18,
+                    IDC_CL_REPORT_NOSKEW);
 }
 
 // ---------------------------------------------------------------------------
-// Tab 5: Resize (placeholder)
+// Tab 5: Resize
 // ---------------------------------------------------------------------------
 
 void create_tab_resize(AppState& state) {
-    HWND parent = state.hwnd_tab_pages[kTabResize];
-    create_label(parent, state.hinstance, state.hfont_ui,
-                 L"Resize controls (coming soon)", 10, 10, 300, 20);
+    HWND p = state.hwnd_tab_pages[kTabResize];
+    auto i = state.hinstance;
+    auto f = state.hfont_ui;
+    int y = 4;
+
+    create_checkbox(p, i, f, L"Resize subimage", 8, y, 140, 18, IDC_RS_ENABLE_CHECK);
+    y += 24;
+
+    // --- Resize from ---
+    create_groupbox(p, i, f, L"Resize from", 8, y, 160, 90);
+    create_radio(p, i, f, L"Subimage", 18, y + 16, 80, 16, IDC_RS_FROM_SUBIMAGE, true, true);
+    create_radio(p, i, f, L"Full page", 18, y + 34, 80, 16, IDC_RS_FROM_FULLPAGE);
+    create_radio(p, i, f, L"Custom area", 18, y + 52, 90, 16, IDC_RS_FROM_CUSTOM);
+    create_radio(p, i, f, L"Smart", 18, y + 70, 80, 16, IDC_RS_FROM_SMART);
+
+    // --- Resize to margins ---
+    int rx = 178;
+    create_groupbox(p, i, f, L"Resize to margins", rx, y, 160, 90);
+    create_label(p, i, f, L"Top:", rx + 10, y + 18, 28, 16);
+    create_edit(p, i, f, rx + 40, y + 16, 46, 22, IDC_RS_TOP_EDIT, L"0.000");
+    create_label(p, i, f, L"Bot:", rx + 92, y + 18, 28, 16);
+    create_edit(p, i, f, rx + 120, y + 16, 30, 22, IDC_RS_BOTTOM_EDIT, L"0.000");
+    create_label(p, i, f, L"Left:", rx + 10, y + 42, 28, 16);
+    create_edit(p, i, f, rx + 40, y + 40, 46, 22, IDC_RS_LEFT_EDIT, L"0.000");
+    create_label(p, i, f, L"Right:", rx + 92, y + 42, 32, 16);
+    create_edit(p, i, f, rx + 124, y + 40, 26, 22, IDC_RS_RIGHT_EDIT, L"0.000");
+    y += 96;
+
+    // --- Canvas ---
+    create_groupbox(p, i, f, L"Canvas", 8, y, 160, 50);
+    create_label(p, i, f, L"W:", 18, y + 18, 18, 16);
+    create_edit(p, i, f, 36, y + 16, 50, 22, IDC_RS_CANVAS_W, L"8.5");
+    create_label(p, i, f, L"H:", 94, y + 18, 18, 16);
+    create_edit(p, i, f, 112, y + 16, 50, 22, IDC_RS_CANVAS_H, L"11.0");
+
+    // --- Alignment ---
+    create_groupbox(p, i, f, L"Vertical alignment", rx, y, 160, 50);
+    create_radio(p, i, f, L"Top", rx + 10, y + 16, 36, 16, IDC_RS_VALIGN_TOP, true);
+    create_radio(p, i, f, L"Ctr", rx + 48, y + 16, 36, 16, IDC_RS_VALIGN_CENTER, false, true);
+    create_radio(p, i, f, L"Bot", rx + 86, y + 16, 36, 16, IDC_RS_VALIGN_BOTTOM);
+    create_radio(p, i, f, L"Prop", rx + 120, y + 16, 42, 16, IDC_RS_VALIGN_PROP);
+
+    create_groupbox(p, i, f, L"Horiz. alignment", rx, y + 50, 160, 36);
+    create_radio(p, i, f, L"Center", rx + 10, y + 66, 60, 16, IDC_RS_HALIGN_CENTER, true, true);
+    create_radio(p, i, f, L"Proportional", rx + 76, y + 66, 84, 16, IDC_RS_HALIGN_PROP);
+    y += 92;
+
+    // --- Settings ---
+    create_checkbox(p, i, f, L"Allow image shrinking", 8, y, 160, 18, IDC_RS_ALLOW_SHRINK, true);
+    y += 20;
+    create_checkbox(p, i, f, L"Allow image increase", 8, y, 160, 18, IDC_RS_ALLOW_INCREASE, true);
+    y += 20;
+    create_checkbox(p, i, f, L"Anti-aliased shrinking", 8, y, 160, 18, IDC_RS_ANTIALIAS);
 }
 
 // ---------------------------------------------------------------------------
