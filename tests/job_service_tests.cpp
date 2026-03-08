@@ -11,6 +11,7 @@
 #include "ppp/core/image.h"
 #include "ppp/core/image_ops.h"
 #include "ppp/core/processing_pipeline.h"
+#include "ppp/core/tiff_writer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -3548,6 +3549,271 @@ bool test_pipeline_step_log_detail() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// TIFF writer tests
+// ---------------------------------------------------------------------------
+
+bool test_tiff_write_gray8_uncompressed() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    // Create a 10x10 gray image with a gradient.
+    Image img(10, 10, PixelFormat::Gray8, 300.0, 300.0);
+    for (int y = 0; y < 10; ++y)
+        for (int x = 0; x < 10; ++x)
+            img.row(y)[x] = static_cast<std::uint8_t>(y * 25);
+
+    auto data = write_tiff_to_memory(img);
+    if (data.empty()) return false;
+
+    // Verify it's a valid TIFF by parsing it.
+    auto structure = Structure::read(data);
+    if (!structure) { std::cerr << "failed to parse written TIFF" << std::endl; return false; }
+    if (structure->page_count() != 1) return false;
+
+    auto w = structure->image_width();
+    auto h = structure->image_length();
+    if (!w || *w != 10) return false;
+    if (!h || *h != 10) return false;
+
+    auto xres = structure->x_resolution();
+    if (!xres || std::abs(*xres - 300.0) > 0.01) return false;
+
+    return true;
+}
+
+bool test_tiff_write_bw1_uncompressed() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image img(32, 16, PixelFormat::BW1, 600.0, 600.0);
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 16; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    auto data = write_tiff_to_memory(img);
+    if (data.empty()) return false;
+
+    auto structure = Structure::read(data);
+    if (!structure) return false;
+    if (*structure->image_width() != 32) return false;
+    if (*structure->bits_per_sample() != 1) return false;
+
+    return true;
+}
+
+bool test_tiff_write_rgb24_uncompressed() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image img(8, 8, PixelFormat::RGB24, 150.0, 150.0);
+    for (int y = 0; y < 8; ++y) {
+        auto* row = img.row(y);
+        for (int x = 0; x < 8; ++x) {
+            row[x * 3] = 255;      // Red.
+            row[x * 3 + 1] = 0;
+            row[x * 3 + 2] = 0;
+        }
+    }
+
+    auto data = write_tiff_to_memory(img);
+    if (data.empty()) return false;
+
+    auto structure = Structure::read(data);
+    if (!structure) return false;
+    if (structure->photometric() != Photometric::RGB) return false;
+
+    return true;
+}
+
+bool test_tiff_write_packbits() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    // Create an image with lots of repeated data (good for PackBits).
+    Image img(100, 100, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0x80);
+
+    WriteOptions opts;
+    opts.compression = Compression::PackBits;
+
+    auto data = write_tiff_to_memory(img, opts);
+    if (data.empty()) return false;
+
+    // PackBits should compress repeated data significantly.
+    auto uncompressed = write_tiff_to_memory(img);
+    if (data.size() >= uncompressed.size()) {
+        std::cerr << "PackBits didn't compress: " << data.size()
+                  << " vs " << uncompressed.size() << std::endl;
+        return false;
+    }
+
+    // Verify header is still valid TIFF.
+    auto structure = Structure::read(data);
+    if (!structure) return false;
+    if (structure->compression() != Compression::PackBits) return false;
+
+    return true;
+}
+
+bool test_tiff_write_lzw() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image img(50, 50, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0x42);
+
+    WriteOptions opts;
+    opts.compression = Compression::LZW;
+
+    auto data = write_tiff_to_memory(img, opts);
+    if (data.empty()) return false;
+
+    auto structure = Structure::read(data);
+    if (!structure) return false;
+    if (structure->compression() != Compression::LZW) return false;
+
+    return true;
+}
+
+bool test_tiff_roundtrip_gray8() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    // Create image with specific pixel values.
+    Image orig(20, 15, PixelFormat::Gray8, 300.0, 300.0);
+    for (int y = 0; y < 15; ++y)
+        for (int x = 0; x < 20; ++x)
+            orig.row(y)[x] = static_cast<std::uint8_t>((x + y * 20) & 0xFF);
+
+    // Write to memory and read back.
+    auto data = write_tiff_to_memory(orig);
+    auto loaded = read_tiff_image(data.data(), data.size());
+
+    if (loaded.empty()) { std::cerr << "failed to read back TIFF" << std::endl; return false; }
+    if (loaded.width() != 20 || loaded.height() != 15) return false;
+    if (loaded.format() != PixelFormat::Gray8) return false;
+
+    // Verify pixel values.
+    for (int y = 0; y < 15; ++y)
+        for (int x = 0; x < 20; ++x)
+            if (loaded.row(y)[x] != orig.row(y)[x]) {
+                std::cerr << "pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+
+    return true;
+}
+
+bool test_tiff_roundtrip_bw1() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image orig(24, 10, PixelFormat::BW1, 600.0, 600.0);
+    // Set a pattern.
+    for (int y = 0; y < 10; ++y)
+        for (int x = 0; x < 24; ++x)
+            if ((x + y) % 3 == 0) orig.set_bw_pixel(x, y, 1);
+
+    auto data = write_tiff_to_memory(orig);
+    auto loaded = read_tiff_image(data.data(), data.size());
+
+    if (loaded.empty()) return false;
+    if (loaded.width() != 24 || loaded.height() != 10) return false;
+    if (loaded.format() != PixelFormat::BW1) return false;
+
+    for (int y = 0; y < 10; ++y)
+        for (int x = 0; x < 24; ++x)
+            if (loaded.get_bw_pixel(x, y) != orig.get_bw_pixel(x, y)) {
+                std::cerr << "bw pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+
+    return true;
+}
+
+bool test_tiff_roundtrip_rgb24() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image orig(8, 6, PixelFormat::RGB24, 72.0, 72.0);
+    for (int y = 0; y < 6; ++y) {
+        auto* row = orig.row(y);
+        for (int x = 0; x < 8; ++x) {
+            row[x * 3] = static_cast<std::uint8_t>(x * 30);
+            row[x * 3 + 1] = static_cast<std::uint8_t>(y * 40);
+            row[x * 3 + 2] = static_cast<std::uint8_t>((x + y) * 20);
+        }
+    }
+
+    auto data = write_tiff_to_memory(orig);
+    auto loaded = read_tiff_image(data.data(), data.size());
+
+    if (loaded.empty()) return false;
+    if (loaded.format() != PixelFormat::RGB24) return false;
+
+    for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 8; ++x)
+            for (int c = 0; c < 3; ++c)
+                if (loaded.row(y)[x * 3 + c] != orig.row(y)[x * 3 + c]) return false;
+
+    return true;
+}
+
+bool test_tiff_file_roundtrip() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image orig(30, 20, PixelFormat::Gray8, 300.0, 300.0);
+    orig.fill(0x55);
+
+    auto path = fs::temp_directory_path() / "ppp_test_tiff_roundtrip.tif";
+
+    if (!write_tiff(orig, path)) { std::cerr << "write_tiff failed" << std::endl; return false; }
+
+    auto loaded = read_tiff_image_file(path);
+    if (loaded.empty()) { std::cerr << "read_tiff_image_file failed" << std::endl; return false; }
+    if (loaded.width() != 30 || loaded.height() != 20) return false;
+    if (loaded.row(0)[0] != 0x55) return false;
+
+    fs::remove(path);
+    return true;
+}
+
+bool test_tiff_multipage() {
+    using namespace ppp::core;
+    using namespace ppp::core::tiff;
+
+    Image page1(20, 10, PixelFormat::Gray8, 300.0, 300.0);
+    page1.fill(0x11);
+    Image page2(30, 15, PixelFormat::Gray8, 300.0, 300.0);
+    page2.fill(0x22);
+
+    auto path = fs::temp_directory_path() / "ppp_test_multipage.tif";
+
+    if (!write_multipage_tiff({page1, page2}, path)) {
+        std::cerr << "write_multipage_tiff failed" << std::endl;
+        return false;
+    }
+
+    // Read back and verify both pages via Structure.
+    auto file_data = read_tiff_file(path.string());
+    if (!file_data) { std::cerr << "read_tiff_file failed" << std::endl; return false; }
+
+    if (file_data->page_count() != 2) {
+        std::cerr << "expected 2 pages, got " << file_data->page_count() << std::endl;
+        return false;
+    }
+
+    auto w1 = file_data->page(0).get_int(Tag::ImageWidth);
+    auto w2 = file_data->page(1).get_int(Tag::ImageWidth);
+    if (!w1 || *w1 != 20) return false;
+    if (!w2 || *w2 != 30) return false;
+
+    fs::remove(path);
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -3622,6 +3888,16 @@ int main() {
         {"pipeline_odd_even_pages", test_pipeline_odd_even_pages},
         {"pipeline_run_step", test_pipeline_run_step},
         {"pipeline_step_log_detail", test_pipeline_step_log_detail},
+        {"tiff_write_gray8_uncompressed", test_tiff_write_gray8_uncompressed},
+        {"tiff_write_bw1_uncompressed", test_tiff_write_bw1_uncompressed},
+        {"tiff_write_rgb24_uncompressed", test_tiff_write_rgb24_uncompressed},
+        {"tiff_write_packbits", test_tiff_write_packbits},
+        {"tiff_write_lzw", test_tiff_write_lzw},
+        {"tiff_roundtrip_gray8", test_tiff_roundtrip_gray8},
+        {"tiff_roundtrip_bw1", test_tiff_roundtrip_bw1},
+        {"tiff_roundtrip_rgb24", test_tiff_roundtrip_rgb24},
+        {"tiff_file_roundtrip", test_tiff_file_roundtrip},
+        {"tiff_multipage", test_tiff_multipage},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);

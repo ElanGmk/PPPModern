@@ -22,6 +22,7 @@ add_library(ppp_core
     src/image.cpp
     src/image_ops.cpp
     src/processing_pipeline.cpp
+    src/tiff_writer.cpp
 )
 
 set(PPP_CORE_HAVE_SQLITE 0)
