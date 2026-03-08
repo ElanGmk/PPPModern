@@ -369,6 +369,478 @@ std::vector<std::uint8_t> lzw_encode(const std::uint8_t* data, std::size_t len) 
 }
 
 // ---------------------------------------------------------------------------
+// CCITT Group 4 fax decompression (T.6 / MMR)
+// ---------------------------------------------------------------------------
+
+struct BitReader {
+    const std::uint8_t* data;
+    std::size_t size;
+    std::size_t byte_pos{0};
+    int bit_pos{0};  // 0 = MSB (bit 7), 7 = LSB (bit 0)
+
+    BitReader(const std::uint8_t* d, std::size_t s) : data(d), size(s) {}
+
+    // Read a single bit (MSB-first).  Returns 0 or 1, or -1 on EOF.
+    int read_bit() {
+        if (byte_pos >= size) return -1;
+        int bit = (data[byte_pos] >> (7 - bit_pos)) & 1;
+        if (++bit_pos >= 8) { bit_pos = 0; ++byte_pos; }
+        return bit;
+    }
+
+    bool eof() const { return byte_pos >= size; }
+};
+
+// Decode one Huffman code from the bitstream using the T.4 tables.
+// Returns the decoded run length, or -1 on error.
+// The tables are organized as terminating codes (0-63) and make-up codes (64+).
+// We use a brute-force table lookup — not optimal but simple and correct.
+
+struct HuffEntry {
+    std::uint16_t code;
+    std::uint8_t bits;
+    std::int16_t run_length;  // -1 = EOL
+};
+
+// Build lookup tables for decoding.
+static const HuffEntry white_decode_table[] = {
+    // Terminating codes 0-63
+    {0x35, 8, 0}, {0x07, 6, 1}, {0x07, 4, 2}, {0x08, 4, 3}, {0x0B, 4, 4}, {0x0C, 4, 5}, {0x0E, 4, 6}, {0x0F, 4, 7},
+    {0x13, 5, 8}, {0x14, 5, 9}, {0x07, 5, 10}, {0x08, 5, 11}, {0x08, 6, 12}, {0x03, 6, 13}, {0x34, 6, 14}, {0x35, 6, 15},
+    {0x2A, 6, 16}, {0x2B, 6, 17}, {0x27, 7, 18}, {0x0C, 7, 19}, {0x08, 7, 20}, {0x17, 7, 21}, {0x03, 7, 22}, {0x04, 7, 23},
+    {0x28, 7, 24}, {0x2B, 7, 25}, {0x13, 7, 26}, {0x24, 7, 27}, {0x18, 7, 28}, {0x02, 8, 29}, {0x03, 8, 30}, {0x1A, 8, 31},
+    {0x1B, 8, 32}, {0x12, 8, 33}, {0x13, 8, 34}, {0x14, 8, 35}, {0x15, 8, 36}, {0x16, 8, 37}, {0x17, 8, 38}, {0x28, 8, 39},
+    {0x29, 8, 40}, {0x2A, 8, 41}, {0x2B, 8, 42}, {0x2C, 8, 43}, {0x2D, 8, 44}, {0x04, 8, 45}, {0x05, 8, 46}, {0x0A, 8, 47},
+    {0x0B, 8, 48}, {0x52, 8, 49}, {0x53, 8, 50}, {0x54, 8, 51}, {0x55, 8, 52}, {0x24, 8, 53}, {0x25, 8, 54}, {0x58, 8, 55},
+    {0x59, 8, 56}, {0x5A, 8, 57}, {0x5B, 8, 58}, {0x4A, 8, 59}, {0x4B, 8, 60}, {0x32, 8, 61}, {0x33, 8, 62}, {0x34, 8, 63},
+    // Make-up codes 64, 128, ..., 2560
+    {0x1B, 5, 64}, {0x12, 5, 128}, {0x17, 6, 192}, {0x37, 7, 256}, {0x36, 8, 320}, {0x37, 8, 384}, {0x64, 8, 448}, {0x65, 8, 512},
+    {0x68, 8, 576}, {0x67, 8, 640}, {0xCC, 9, 704}, {0xCD, 9, 768}, {0xD2, 9, 832}, {0xD3, 9, 896}, {0xD4, 9, 960}, {0xD5, 9, 1024},
+    {0xD6, 9, 1088}, {0xD7, 9, 1152}, {0xD8, 9, 1216}, {0xD9, 9, 1280}, {0xDA, 9, 1344}, {0xDB, 9, 1408}, {0x98, 9, 1472}, {0x99, 9, 1536},
+    {0x9A, 9, 1600}, {0x18, 6, 1664}, {0x9B, 9, 1728}, {0x08, 11, 1792}, {0x0C, 11, 1856}, {0x0D, 11, 1920}, {0x12, 12, 1984}, {0x13, 12, 2048},
+    {0x14, 12, 2112}, {0x15, 12, 2176}, {0x16, 12, 2240}, {0x17, 12, 2304}, {0x1C, 12, 2368}, {0x1D, 12, 2432}, {0x1E, 12, 2496}, {0x1F, 12, 2560},
+};
+static constexpr int white_decode_count = sizeof(white_decode_table) / sizeof(white_decode_table[0]);
+
+static const HuffEntry black_decode_table[] = {
+    // Terminating codes 0-63
+    {0x37, 10, 0}, {0x02, 3, 1}, {0x03, 2, 2}, {0x02, 2, 3}, {0x03, 3, 4}, {0x03, 4, 5}, {0x02, 4, 6}, {0x03, 5, 7},
+    {0x05, 6, 8}, {0x04, 6, 9}, {0x04, 7, 10}, {0x05, 7, 11}, {0x07, 7, 12}, {0x04, 8, 13}, {0x07, 8, 14}, {0x18, 9, 15},
+    {0x17, 10, 16}, {0x18, 10, 17}, {0x08, 10, 18}, {0x67, 11, 19}, {0x68, 11, 20}, {0x6C, 11, 21}, {0x37, 11, 22}, {0x28, 11, 23},
+    {0x17, 11, 24}, {0x18, 11, 25}, {0xCA, 12, 26}, {0xCB, 12, 27}, {0xCC, 12, 28}, {0xCD, 12, 29}, {0x68, 12, 30}, {0x69, 12, 31},
+    {0x6A, 12, 32}, {0x6B, 12, 33}, {0xD2, 12, 34}, {0xD3, 12, 35}, {0xD4, 12, 36}, {0xD5, 12, 37}, {0xD6, 12, 38}, {0xD7, 12, 39},
+    {0x6C, 12, 40}, {0x6D, 12, 41}, {0xDA, 12, 42}, {0xDB, 12, 43}, {0x54, 12, 44}, {0x55, 12, 45}, {0x56, 12, 46}, {0x57, 12, 47},
+    {0x64, 12, 48}, {0x65, 12, 49}, {0x52, 12, 50}, {0x53, 12, 51}, {0x24, 12, 52}, {0x37, 12, 53}, {0x38, 12, 54}, {0x27, 12, 55},
+    {0x28, 12, 56}, {0x58, 12, 57}, {0x59, 12, 58}, {0x2B, 12, 59}, {0x2C, 12, 60}, {0x5A, 12, 61}, {0x66, 12, 62}, {0x67, 12, 63},
+    // Make-up codes 64, 128, ..., 2560
+    {0x0F, 10, 64}, {0xC8, 12, 128}, {0xC9, 12, 192}, {0x5B, 12, 256}, {0x33, 12, 320}, {0x34, 12, 384}, {0x35, 12, 448}, {0x6C, 13, 512},
+    {0x6D, 13, 576}, {0x4A, 13, 640}, {0x4B, 13, 704}, {0x4C, 13, 768}, {0x4D, 13, 832}, {0x72, 13, 896}, {0x73, 13, 960}, {0x74, 13, 1024},
+    {0x75, 13, 1088}, {0x76, 13, 1152}, {0x77, 13, 1216}, {0x52, 13, 1280}, {0x53, 13, 1344}, {0x54, 13, 1408}, {0x55, 13, 1472}, {0x5A, 13, 1536},
+    {0x5B, 13, 1600}, {0x64, 13, 1664}, {0x65, 13, 1728}, {0x08, 11, 1792}, {0x0C, 11, 1856}, {0x0D, 11, 1920}, {0x12, 12, 1984}, {0x13, 12, 2048},
+    {0x14, 12, 2112}, {0x15, 12, 2176}, {0x16, 12, 2240}, {0x17, 12, 2304}, {0x1C, 12, 2368}, {0x1D, 12, 2432}, {0x1E, 12, 2496}, {0x1F, 12, 2560},
+};
+static constexpr int black_decode_count = sizeof(black_decode_table) / sizeof(black_decode_table[0]);
+
+// Decode a run length from the bitstream using Huffman tables.
+int decode_run(BitReader& br, bool is_white) {
+    const HuffEntry* table = is_white ? white_decode_table : black_decode_table;
+    int table_size = is_white ? white_decode_count : black_decode_count;
+
+    int total_run = 0;
+    bool need_more = true;
+
+    while (need_more) {
+        std::uint32_t code = 0;
+        int code_bits = 0;
+        bool found = false;
+
+        // Try matching against table entries, accumulating bits.
+        // Max code length is 13 bits.
+        auto saved_byte = br.byte_pos;
+        auto saved_bit = br.bit_pos;
+
+        for (int b = 0; b < 13 && !br.eof(); ++b) {
+            int bit = br.read_bit();
+            if (bit < 0) return -1;
+            code = (code << 1) | static_cast<std::uint32_t>(bit);
+            ++code_bits;
+
+            for (int j = 0; j < table_size; ++j) {
+                if (table[j].bits == code_bits && table[j].code == code) {
+                    int rl = table[j].run_length;
+                    total_run += rl;
+                    // Make-up code (>= 64): need another code after it.
+                    // Terminating code (< 64): done.
+                    if (rl < 64) {
+                        need_more = false;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+
+        if (!found) {
+            // Check for EOL (000000000001) — 12 zero bits followed by a 1.
+            // In Group 4, two consecutive EOLs = EOFB.
+            return -1;  // Unrecognized code or EOL.
+        }
+    }
+
+    return total_run;
+}
+
+// Decode Group 4 compressed data into pixel rows.
+// Reference: ITU-T T.6 (MMR / Modified Modified READ).
+//
+// The coding line (current row) is built relative to a reference line
+// (previous row, initially all-white).  Three coding modes:
+//   Pass mode       (0001):    skip past b2
+//   Horizontal mode (001):     two explicit run-length codes
+//   Vertical modes  (1, 01x, 000x1x, 00000x1x):  a1 = b1 ± offset
+//
+// Returns number of rows decoded.
+int group4_decode_strip(const std::uint8_t* data, std::size_t data_size,
+                        std::uint8_t* output, std::int32_t width, std::int32_t height,
+                        std::int32_t row_bytes) {
+    BitReader br(data, data_size);
+
+    // Build a list of changing-element x-positions from a packed BW1 row.
+    // changes[0] = first black pixel, changes[1] = first white after that, etc.
+    // Always terminated with 'width' as a sentinel.
+    auto build_changes = [](const std::uint8_t* row, int w) -> std::vector<int> {
+        std::vector<int> ch;
+        int prev = 0;  // white
+        for (int x = 0; x < w; ++x) {
+            int px = (row[x >> 3] >> (7 - (x & 7))) & 1;
+            if (px != prev) { ch.push_back(x); prev = px; }
+        }
+        ch.push_back(w);
+        return ch;
+    };
+
+    // Find b1 and b2 from ref_ch given current a0 and a0_color.
+    // b1 = first changing element on ref line right of a0 with opposite color to a0_color.
+    // b2 = next changing element after b1.
+    auto find_b1b2 = [](const std::vector<int>& ref_ch, int a0, int a0_color, int w,
+                         int& b1_out, int& b2_out) {
+        // ref_ch indices: even = where black starts, odd = where white starts.
+        // Color at ref_ch[i]: (i % 2 == 0) ? 1(black) : 0(white).
+        b1_out = w;
+        b2_out = w;
+        for (std::size_t i = 0; i < ref_ch.size(); ++i) {
+            if (ref_ch[i] <= a0) continue;
+            int color_at_i = (static_cast<int>(i) % 2 == 0) ? 1 : 0;
+            if (color_at_i != a0_color) {
+                b1_out = ref_ch[i];
+                b2_out = (i + 1 < ref_ch.size()) ? ref_ch[i + 1] : w;
+                return;
+            }
+        }
+    };
+
+    // Set bits [from, to) to 1 (black) in a packed BW1 row.
+    auto set_black = [](std::uint8_t* row, int from, int to) {
+        for (int x = from; x < to; ++x)
+            row[x >> 3] |= static_cast<std::uint8_t>(0x80 >> (x & 7));
+    };
+
+    // Allocate reference row (initially all white = zeros).
+    std::vector<std::uint8_t> ref_row(static_cast<std::size_t>(row_bytes), 0);
+
+    for (std::int32_t y = 0; y < height; ++y) {
+        std::uint8_t* cur_row = output + static_cast<std::size_t>(y) * row_bytes;
+        std::memset(cur_row, 0, static_cast<std::size_t>(row_bytes));
+
+        auto ref_ch = build_changes(ref_row.data(), width);
+
+        int a0 = -1;
+        int a0_color = 0;  // 0=white, 1=black
+
+        while (a0 < width) {
+            int b1 = width, b2 = width;
+            find_b1b2(ref_ch, a0, a0_color, width, b1, b2);
+
+            int bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // V(0): a1 = b1
+                int start = (a0 < 0) ? 0 : a0;
+                if (a0_color == 1) set_black(cur_row, start, std::min(b1, width));
+                a0 = b1;
+                a0_color = 1 - a0_color;
+                continue;
+            }
+
+            // bit was 0, read next
+            bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // 01x
+                bit = br.read_bit();
+                if (bit < 0) goto done;
+                int a1 = (bit == 1) ? (b1 + 1) : (b1 - 1);  // VR(1) or VL(1)
+                if (a1 < 0) a1 = 0;
+                if (a1 > width) a1 = width;
+                int start = (a0 < 0) ? 0 : a0;
+                if (a0_color == 1) set_black(cur_row, start, a1);
+                a0 = a1;
+                a0_color = 1 - a0_color;
+                continue;
+            }
+
+            // 00x
+            bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // 001 = Horizontal mode
+                int run1 = decode_run(br, a0_color == 0);
+                int run2 = decode_run(br, a0_color != 0);
+                if (run1 < 0 || run2 < 0) goto done;
+
+                int start = (a0 < 0) ? 0 : a0;
+                // First run in a0_color
+                if (a0_color == 1)
+                    set_black(cur_row, start, std::min(start + run1, width));
+                // Second run in opposite color
+                int start2 = start + run1;
+                if (a0_color == 0)  // opposite is black
+                    set_black(cur_row, start2, std::min(start2 + run2, width));
+                a0 = start + run1 + run2;
+                // a0_color unchanged after horizontal mode
+                continue;
+            }
+
+            // 000x
+            bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // 0001 = Pass mode: advance a0 to b2, color stays
+                int start = (a0 < 0) ? 0 : a0;
+                if (a0_color == 1) set_black(cur_row, start, std::min(b2, width));
+                a0 = b2;
+                continue;
+            }
+
+            // 0000x
+            bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // 00001x = VR(2) or VL(2)
+                bit = br.read_bit();
+                if (bit < 0) goto done;
+                int a1 = (bit == 1) ? (b1 + 2) : (b1 - 2);
+                if (a1 < 0) a1 = 0;
+                if (a1 > width) a1 = width;
+                int start = (a0 < 0) ? 0 : a0;
+                if (a0_color == 1) set_black(cur_row, start, a1);
+                a0 = a1;
+                a0_color = 1 - a0_color;
+                continue;
+            }
+
+            // 00000x
+            bit = br.read_bit();
+            if (bit < 0) goto done;
+
+            if (bit == 1) {
+                // 000001x = VR(3) or VL(3)
+                bit = br.read_bit();
+                if (bit < 0) goto done;
+                int a1 = (bit == 1) ? (b1 + 3) : (b1 - 3);
+                if (a1 < 0) a1 = 0;
+                if (a1 > width) a1 = width;
+                int start = (a0 < 0) ? 0 : a0;
+                if (a0_color == 1) set_black(cur_row, start, a1);
+                a0 = a1;
+                a0_color = 1 - a0_color;
+                continue;
+            }
+
+            // 000000... = EOFB or unrecognized. Stop.
+            goto done;
+        }
+
+        // Current row becomes next reference.
+        std::memcpy(ref_row.data(), cur_row, static_cast<std::size_t>(row_bytes));
+    }
+
+done:
+    return static_cast<int>(height);
+}
+
+// ---------------------------------------------------------------------------
+// LZW decompression
+// ---------------------------------------------------------------------------
+
+std::vector<std::uint8_t> lzw_decode(const std::uint8_t* data, std::size_t size,
+                                      std::size_t expected_size) {
+    std::vector<std::uint8_t> out;
+    out.reserve(expected_size);
+
+    const int CLEAR_CODE = 256;
+    const int EOI_CODE = 257;
+
+    // MSB-first bit reader for TIFF LZW.
+    struct LzwBitReader {
+        const std::uint8_t* data;
+        std::size_t size;
+        std::size_t byte_pos{0};
+        int bits_left{0};
+        std::uint32_t accum{0};
+
+        LzwBitReader(const std::uint8_t* d, std::size_t s) : data(d), size(s) {}
+
+        int read(int nbits) {
+            while (bits_left < nbits) {
+                if (byte_pos >= size) return -1;
+                accum = (accum << 8) | data[byte_pos++];
+                bits_left += 8;
+            }
+            bits_left -= nbits;
+            return static_cast<int>((accum >> bits_left) & ((1u << nbits) - 1));
+        }
+    };
+
+    LzwBitReader br(data, size);
+
+    // Dictionary.
+    struct DictEntry {
+        std::vector<std::uint8_t> str;
+    };
+
+    std::vector<DictEntry> dict;
+    int next_code = 0;
+    int code_size = 9;
+
+    auto reset_dict = [&]() {
+        dict.clear();
+        dict.resize(258);
+        for (int i = 0; i < 256; ++i) {
+            dict[i].str = {static_cast<std::uint8_t>(i)};
+        }
+        // 256 = clear, 257 = EOI — no string.
+        dict[256].str = {};
+        dict[257].str = {};
+        next_code = 258;
+        code_size = 9;
+    };
+
+    reset_dict();
+
+    // Read first code (should be CLEAR_CODE).
+    int code = br.read(code_size);
+    if (code != CLEAR_CODE) return {};  // Must start with clear.
+
+    code = br.read(code_size);
+    if (code < 0 || code == EOI_CODE) return out;
+    if (code >= static_cast<int>(dict.size())) return {};
+
+    out.insert(out.end(), dict[code].str.begin(), dict[code].str.end());
+    int old_code = code;
+
+    while (true) {
+        code = br.read(code_size);
+        if (code < 0 || code == EOI_CODE) break;
+
+        if (code == CLEAR_CODE) {
+            reset_dict();
+            code = br.read(code_size);
+            if (code < 0 || code == EOI_CODE) break;
+            if (code >= static_cast<int>(dict.size())) return {};
+            out.insert(out.end(), dict[code].str.begin(), dict[code].str.end());
+            old_code = code;
+            continue;
+        }
+
+        if (code < static_cast<int>(dict.size()) && !dict[code].str.empty()) {
+            // Code is in dictionary.
+            out.insert(out.end(), dict[code].str.begin(), dict[code].str.end());
+
+            // Add old_code + first byte of code's string.
+            if (next_code <= 4095) {
+                DictEntry entry;
+                entry.str = dict[old_code].str;
+                entry.str.push_back(dict[code].str[0]);
+                if (next_code < static_cast<int>(dict.size())) {
+                    dict[next_code] = std::move(entry);
+                } else {
+                    dict.push_back(std::move(entry));
+                }
+                ++next_code;
+                if (next_code > (1 << code_size) && code_size < 12) {
+                    ++code_size;
+                }
+            }
+        } else {
+            // Code not in dictionary — special case.
+            // New string = old_code's string + first byte of old_code's string.
+            if (old_code >= static_cast<int>(dict.size())) return {};
+            auto new_str = dict[old_code].str;
+            new_str.push_back(new_str[0]);
+            out.insert(out.end(), new_str.begin(), new_str.end());
+
+            if (next_code <= 4095) {
+                DictEntry entry;
+                entry.str = std::move(new_str);
+                if (next_code < static_cast<int>(dict.size())) {
+                    dict[next_code] = std::move(entry);
+                } else {
+                    dict.push_back(std::move(entry));
+                }
+                ++next_code;
+                if (next_code > (1 << code_size) && code_size < 12) {
+                    ++code_size;
+                }
+            }
+        }
+
+        old_code = code;
+        if (out.size() >= expected_size) break;
+    }
+
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// PackBits decompression
+// ---------------------------------------------------------------------------
+
+std::vector<std::uint8_t> packbits_decode(const std::uint8_t* data, std::size_t size,
+                                           std::size_t expected_size) {
+    std::vector<std::uint8_t> out;
+    out.reserve(expected_size);
+    std::size_t i = 0;
+
+    while (i < size && out.size() < expected_size) {
+        auto n = static_cast<std::int8_t>(data[i++]);
+        if (n >= 0) {
+            // Literal run: n+1 bytes follow.
+            int count = n + 1;
+            for (int j = 0; j < count && i < size; ++j)
+                out.push_back(data[i++]);
+        } else if (n != -128) {
+            // Repeated byte: 1-n+1 copies of next byte.
+            int count = 1 - n;
+            if (i < size) {
+                std::uint8_t val = data[i++];
+                for (int j = 0; j < count; ++j)
+                    out.push_back(val);
+            }
+        }
+        // n == -128: no-op.
+    }
+
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // IFD entry builder
 // ---------------------------------------------------------------------------
 
@@ -725,6 +1197,18 @@ bool write_multipage_tiff(const std::vector<Image>& images,
 // TIFF reader (pixel data extraction)
 // ---------------------------------------------------------------------------
 
+// Helper: extract a vector of uint32 from an IFD entry (handles Short or Long).
+std::vector<std::uint32_t> extract_uint32_array(const IfdEntry& entry) {
+    std::vector<std::uint32_t> result;
+    if (auto* longs = std::get_if<std::vector<std::uint32_t>>(&entry.value)) {
+        result = *longs;
+    } else if (auto* shorts = std::get_if<std::vector<std::uint16_t>>(&entry.value)) {
+        result.reserve(shorts->size());
+        for (auto s : *shorts) result.push_back(s);
+    }
+    return result;
+}
+
 Image read_tiff_image(const std::uint8_t* data, std::size_t size,
                       std::size_t page) {
     auto structure = Structure::read(data, size);
@@ -742,13 +1226,12 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
     auto bps_opt = ifd.get_int(Tag::BitsPerSample);
     auto spp_opt = ifd.get_int(Tag::SamplesPerPixel);
     auto comp_opt = ifd.get_int(Tag::Compression);
+    auto photo_opt = ifd.get_int(Tag::PhotometricInterpretation);
 
     int bps = bps_opt ? static_cast<int>(*bps_opt) : 1;
     int spp = spp_opt ? static_cast<int>(*spp_opt) : 1;
     int comp = comp_opt ? static_cast<int>(*comp_opt) : 1;
-
-    // Only support uncompressed for reading pixel data.
-    if (comp != 1) return {};
+    int photo = photo_opt ? static_cast<int>(*photo_opt) : 1;
 
     // Determine pixel format.
     PixelFormat fmt;
@@ -765,15 +1248,10 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
 
     if (!strip_off_entry || !strip_bc_entry) return {};
 
-    // Extract strip offsets.
-    std::vector<std::uint32_t> strip_offsets;
-    if (auto* longs = std::get_if<std::vector<std::uint32_t>>(&strip_off_entry->value)) {
-        strip_offsets = *longs;
-    } else if (auto* shorts = std::get_if<std::vector<std::uint16_t>>(&strip_off_entry->value)) {
-        for (auto s : *shorts) strip_offsets.push_back(s);
-    } else {
-        return {};
-    }
+    auto strip_offsets = extract_uint32_array(*strip_off_entry);
+    auto strip_byte_counts = extract_uint32_array(*strip_bc_entry);
+
+    if (strip_offsets.empty() || strip_offsets.size() != strip_byte_counts.size()) return {};
 
     // Get resolution.
     double dpi_x = 0, dpi_y = 0;
@@ -784,7 +1262,7 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
 
     Image img(w, h, fmt, dpi_x, dpi_y);
 
-    // Calculate TIFF row bytes (no padding).
+    // Calculate TIFF row bytes (no DWORD padding — TIFF uses tight packing).
     std::int32_t tiff_row_bytes;
     if (fmt == PixelFormat::BW1) {
         tiff_row_bytes = (w + 7) / 8;
@@ -793,16 +1271,97 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
     }
 
     int rows_per_strip = rps_opt ? static_cast<int>(*rps_opt) : h;
+
+    // --- Group 4 fax: decode each strip independently ---
+    // Each TIFF strip starts with a fresh all-white reference line and ends
+    // with its own EOFB marker.
+    if (comp == 4 && fmt == PixelFormat::BW1) {
+        std::int32_t row = 0;
+
+        for (std::size_t s = 0; s < strip_offsets.size() && row < h; ++s) {
+            auto off = strip_offsets[s];
+            auto bc = strip_byte_counts[s];
+            if (off + bc > size) return {};
+
+            int rows_this_strip = std::min(rows_per_strip,
+                                           static_cast<int>(h - row));
+
+            // Decode into temp buffer, then copy rows to Image.
+            std::vector<std::uint8_t> decoded(
+                static_cast<std::size_t>(tiff_row_bytes) * rows_this_strip, 0);
+            group4_decode_strip(data + off, bc,
+                                decoded.data(), w, rows_this_strip,
+                                tiff_row_bytes);
+
+            for (int r = 0; r < rows_this_strip; ++r, ++row) {
+                std::memcpy(img.row(row),
+                            decoded.data() + static_cast<std::size_t>(r) * tiff_row_bytes,
+                            tiff_row_bytes);
+            }
+        }
+
+        // Handle photometric: WhiteIsZero (0) means 0=white, 1=black.
+        // Our BW1 convention: 1=black (foreground). So WhiteIsZero matches.
+        // BlackIsZero (1) means 0=black, 1=white — need to invert.
+        if (photo == 1) {
+            for (std::int32_t y = 0; y < h; ++y) {
+                auto* row_ptr = img.row(y);
+                for (std::int32_t b = 0; b < tiff_row_bytes; ++b)
+                    row_ptr[b] = ~row_ptr[b];
+            }
+        }
+
+        return img;
+    }
+
+    // --- Per-strip decompression for other compression types ---
     std::int32_t row = 0;
 
     for (std::size_t s = 0; s < strip_offsets.size() && row < h; ++s) {
         auto offset = strip_offsets[s];
+        auto byte_count = strip_byte_counts[s];
         int rows_this_strip = std::min(rows_per_strip, static_cast<int>(h - row));
 
+        if (offset + byte_count > size) return {};
+
+        const std::uint8_t* strip_ptr = data + offset;
+        std::size_t strip_size = byte_count;
+
+        // Decompress strip if needed.
+        std::vector<std::uint8_t> decompressed;
+        std::size_t expected = static_cast<std::size_t>(rows_this_strip) * tiff_row_bytes;
+
+        switch (comp) {
+        case 1:  // Uncompressed — use data directly.
+            break;
+        case 5:  // LZW
+            decompressed = lzw_decode(strip_ptr, strip_size, expected);
+            strip_ptr = decompressed.data();
+            strip_size = decompressed.size();
+            break;
+        case 32773:  // PackBits
+            decompressed = packbits_decode(strip_ptr, strip_size, expected);
+            strip_ptr = decompressed.data();
+            strip_size = decompressed.size();
+            break;
+        default:
+            return {};  // Unsupported compression.
+        }
+
+        // Copy decompressed rows into Image.
         for (int r = 0; r < rows_this_strip && row < h; ++r, ++row) {
-            auto src_pos = offset + static_cast<std::uint32_t>(r) * tiff_row_bytes;
-            if (src_pos + tiff_row_bytes > size) return {};
-            std::memcpy(img.row(row), data + src_pos, tiff_row_bytes);
+            auto src_pos = static_cast<std::size_t>(r) * tiff_row_bytes;
+            if (src_pos + tiff_row_bytes > strip_size) break;
+            std::memcpy(img.row(row), strip_ptr + src_pos, tiff_row_bytes);
+        }
+    }
+
+    // Handle photometric inversion for grayscale/BW.
+    if (fmt == PixelFormat::BW1 && photo == 1) {
+        for (std::int32_t y = 0; y < h; ++y) {
+            auto* row = img.row(y);
+            for (std::int32_t b = 0; b < tiff_row_bytes; ++b)
+                row[b] = ~row[b];
         }
     }
 

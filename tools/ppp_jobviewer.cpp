@@ -43,6 +43,7 @@ namespace {
 
 namespace fs = std::filesystem;
 using namespace ppp::core;
+namespace ops = ppp::core::ops;
 
 // ---------------------------------------------------------------------------
 // Menu / control identifiers
@@ -81,6 +82,13 @@ enum ControlId : UINT {
     IDM_VIEW_ACTUAL,
     IDM_VIEW_NEXT,
     IDM_VIEW_PREV,
+    IDM_VIEW_FIRST,
+    IDM_VIEW_LAST,
+    // Image operations
+    IDM_IMAGE_ROTATE_CW,
+    IDM_IMAGE_ROTATE_CCW,
+    IDM_IMAGE_ROTATE_180,
+    IDM_IMAGE_DELETE_PAGE,
     // Help
     IDM_HELP_ABOUT,
     // Controls
@@ -417,8 +425,18 @@ void create_menus(HWND hwnd) {
     AppendMenuW(view_menu, MF_STRING, IDM_VIEW_FIT, L"&Fit to Window\tCtrl+0");
     AppendMenuW(view_menu, MF_STRING, IDM_VIEW_ACTUAL, L"&Actual Size\tCtrl+1");
     AppendMenuW(view_menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(view_menu, MF_STRING, IDM_VIEW_NEXT, L"&Next Page\tPage Down");
+    AppendMenuW(view_menu, MF_STRING, IDM_VIEW_FIRST, L"&First Page\tHome");
     AppendMenuW(view_menu, MF_STRING, IDM_VIEW_PREV, L"&Previous Page\tPage Up");
+    AppendMenuW(view_menu, MF_STRING, IDM_VIEW_NEXT, L"&Next Page\tPage Down");
+    AppendMenuW(view_menu, MF_STRING, IDM_VIEW_LAST, L"&Last Page\tEnd");
+
+    // Image menu
+    HMENU image_menu = CreatePopupMenu();
+    AppendMenuW(image_menu, MF_STRING, IDM_IMAGE_ROTATE_CW, L"Rotate &Clockwise 90\xB0\tCtrl+R");
+    AppendMenuW(image_menu, MF_STRING, IDM_IMAGE_ROTATE_CCW, L"Rotate Counter-C&lockwise 90\xB0\tCtrl+L");
+    AppendMenuW(image_menu, MF_STRING, IDM_IMAGE_ROTATE_180, L"Rotate &180\xB0");
+    AppendMenuW(image_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(image_menu, MF_STRING, IDM_IMAGE_DELETE_PAGE, L"&Delete Page\tDel");
 
     // Help menu
     HMENU help_menu = CreatePopupMenu();
@@ -427,6 +445,7 @@ void create_menus(HWND hwnd) {
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(file_menu), L"&File");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(profile_menu), L"&Profile");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(process_menu), L"P&rocess");
+    AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(image_menu), L"&Image");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(view_menu), L"&View");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(help_menu), L"&Help");
 
@@ -1497,6 +1516,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case WM_NOTIFY: {
+        if (!state) break;
+        auto* hdr = reinterpret_cast<NMHDR*>(lp);
+        if (hdr->code == TBN_GETINFOTIPW) {
+            auto* tip = reinterpret_cast<NMTBGETINFOTIPW*>(lp);
+            const wchar_t* text = nullptr;
+            switch (tip->iItem) {
+            case IDM_FILE_OPEN:       text = L"Open Image (Ctrl+O)"; break;
+            case IDM_FILE_SAVE:       text = L"Save Processed (Ctrl+S)"; break;
+            case IDM_PROCESS_CURRENT: text = L"Process Current Page (F5)"; break;
+            case IDM_VIEW_ZOOM_IN:    text = L"Zoom In (Ctrl++)"; break;
+            case IDM_VIEW_ZOOM_OUT:   text = L"Zoom Out (Ctrl+-)"; break;
+            case IDM_VIEW_TOGGLE:     text = L"Toggle Original/Processed (Space)"; break;
+            case IDM_VIEW_PREV:       text = L"Previous Page (Page Up)"; break;
+            case IDM_VIEW_NEXT:       text = L"Next Page (Page Down)"; break;
+            }
+            if (text) {
+                wcsncpy_s(tip->pszText, static_cast<std::size_t>(tip->cchTextMax),
+                           text, _TRUNCATE);
+            }
+        }
+        return 0;
+    }
+
     case WM_COMMAND: {
         if (!state) break;
         auto id = LOWORD(wp);
@@ -1583,6 +1626,69 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 update_display(*state);
             }
             break;
+        case IDM_VIEW_FIRST:
+            if (!state->entries.empty() && state->current_index != 0) {
+                state->current_index = 0;
+                state->fit_mode = true;
+                update_display(*state);
+            }
+            break;
+        case IDM_VIEW_LAST:
+            if (!state->entries.empty()) {
+                int last = static_cast<int>(state->entries.size()) - 1;
+                if (state->current_index != last) {
+                    state->current_index = last;
+                    state->fit_mode = true;
+                    update_display(*state);
+                }
+            }
+            break;
+
+        case IDM_IMAGE_ROTATE_CW:
+            if (state->current_index >= 0) {
+                auto& entry = state->entries[state->current_index];
+                entry.original = ops::rotate_arbitrary(entry.original, 90.0);
+                if (entry.processed)
+                    *entry.processed = ops::rotate_arbitrary(*entry.processed, 90.0);
+                state->fit_mode = true;
+                update_display(*state);
+            }
+            break;
+        case IDM_IMAGE_ROTATE_CCW:
+            if (state->current_index >= 0) {
+                auto& entry = state->entries[state->current_index];
+                entry.original = ops::rotate_arbitrary(entry.original, 270.0);
+                if (entry.processed)
+                    *entry.processed = ops::rotate_arbitrary(*entry.processed, 270.0);
+                state->fit_mode = true;
+                update_display(*state);
+            }
+            break;
+        case IDM_IMAGE_ROTATE_180:
+            if (state->current_index >= 0) {
+                auto& entry = state->entries[state->current_index];
+                entry.original = ops::rotate_arbitrary(entry.original, 180.0);
+                if (entry.processed)
+                    *entry.processed = ops::rotate_arbitrary(*entry.processed, 180.0);
+                state->fit_mode = true;
+                update_display(*state);
+            }
+            break;
+        case IDM_IMAGE_DELETE_PAGE:
+            if (state->current_index >= 0 && state->entries.size() > 1) {
+                state->entries.erase(state->entries.begin() + state->current_index);
+                if (state->current_index >= static_cast<int>(state->entries.size()))
+                    state->current_index = static_cast<int>(state->entries.size()) - 1;
+                state->fit_mode = true;
+                update_display(*state);
+            } else if (state->current_index >= 0 && state->entries.size() == 1) {
+                state->entries.clear();
+                state->current_index = -1;
+                free_display_bitmap(*state);
+                InvalidateRect(state->hwnd_image_panel, nullptr, TRUE);
+                update_statusbar(*state);
+            }
+            break;
 
         case IDM_HELP_ABOUT:
             MessageBoxW(hwnd,
@@ -1598,33 +1704,105 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_KEYDOWN:
         if (!state) break;
-        switch (wp) {
-        case VK_F5:
-            if (GetKeyState(VK_SHIFT) & 0x8000)
-                do_process_all(*state);
-            else
-                do_process_current(*state);
-            return 0;
-        case VK_F6:
-            state->showing_processed = false;
-            update_display(*state);
-            return 0;
-        case VK_F7:
-            state->showing_processed = true;
-            update_display(*state);
-            return 0;
-        case VK_SPACE:
-            if (state->current_index >= 0) {
-                state->showing_processed = !state->showing_processed;
+        {
+            bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            int scroll_step = shift ? 100 : 30;  // Shift = fast scroll
+
+            switch (wp) {
+            // --- Processing ---
+            case VK_F5:
+                if (shift)
+                    do_process_all(*state);
+                else
+                    do_process_current(*state);
+                return 0;
+
+            // --- View toggle ---
+            case VK_F6:
+                state->showing_processed = false;
                 update_display(*state);
+                return 0;
+            case VK_F7:
+                state->showing_processed = true;
+                update_display(*state);
+                return 0;
+            case VK_SPACE:
+                if (state->current_index >= 0) {
+                    state->showing_processed = !state->showing_processed;
+                    update_display(*state);
+                }
+                return 0;
+
+            // --- Page navigation ---
+            case VK_NEXT:   // Page Down
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
+                return 0;
+            case VK_PRIOR:  // Page Up
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
+                return 0;
+            case VK_HOME:
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_FIRST, 0);
+                return 0;
+            case VK_END:
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_LAST, 0);
+                return 0;
+
+            // --- Arrow key scrolling ---
+            case VK_UP:
+                if (ctrl) {
+                    // Ctrl+Up = previous page
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
+                } else {
+                    state->scroll_y = std::max(0, state->scroll_y - scroll_step);
+                    InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
+                }
+                return 0;
+            case VK_DOWN:
+                if (ctrl) {
+                    // Ctrl+Down = next page
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
+                } else {
+                    state->scroll_y += scroll_step;
+                    InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
+                }
+                return 0;
+            case VK_LEFT:
+                state->scroll_x = std::max(0, state->scroll_x - scroll_step);
+                InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
+                return 0;
+            case VK_RIGHT:
+                state->scroll_x += scroll_step;
+                InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
+                return 0;
+
+            // --- Zoom via +/- keys (numpad and main) ---
+            case VK_ADD:       // Numpad +
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_ZOOM_IN, 0);
+                return 0;
+            case VK_SUBTRACT:  // Numpad -
+                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_ZOOM_OUT, 0);
+                return 0;
+
+            // --- Rotate ---
+            case 'R':
+                if (ctrl) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_IMAGE_ROTATE_CW, 0);
+                    return 0;
+                }
+                break;
+            case 'L':
+                if (ctrl) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_IMAGE_ROTATE_CCW, 0);
+                    return 0;
+                }
+                break;
+
+            // --- Delete page ---
+            case VK_DELETE:
+                SendMessageW(hwnd, WM_COMMAND, IDM_IMAGE_DELETE_PAGE, 0);
+                return 0;
             }
-            return 0;
-        case VK_NEXT:  // Page Down
-            SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
-            return 0;
-        case VK_PRIOR:  // Page Up
-            SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
-            return 0;
         }
         break;
 
@@ -1688,13 +1866,24 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
     // Create accelerator table for keyboard shortcuts.
     ACCEL accels[] = {
+        // File
         {FCONTROL | FVIRTKEY, 'O', IDM_FILE_OPEN},
         {FCONTROL | FVIRTKEY, 'S', IDM_FILE_SAVE},
+        // Process
         {FVIRTKEY, VK_F5, IDM_PROCESS_CURRENT},
+        {FSHIFT | FVIRTKEY, VK_F5, IDM_PROCESS_ALL},
+        // View / Zoom
         {FCONTROL | FVIRTKEY, '0', IDM_VIEW_FIT},
         {FCONTROL | FVIRTKEY, '1', IDM_VIEW_ACTUAL},
         {FCONTROL | FVIRTKEY, VK_OEM_PLUS, IDM_VIEW_ZOOM_IN},
         {FCONTROL | FVIRTKEY, VK_OEM_MINUS, IDM_VIEW_ZOOM_OUT},
+        // Image
+        {FCONTROL | FVIRTKEY, 'R', IDM_IMAGE_ROTATE_CW},
+        {FCONTROL | FVIRTKEY, 'L', IDM_IMAGE_ROTATE_CCW},
+        {FVIRTKEY, VK_DELETE, IDM_IMAGE_DELETE_PAGE},
+        // Navigation
+        {FVIRTKEY, VK_HOME, IDM_VIEW_FIRST},
+        {FVIRTKEY, VK_END, IDM_VIEW_LAST},
     };
     HACCEL haccel = CreateAcceleratorTableW(accels, static_cast<int>(std::size(accels)));
 
