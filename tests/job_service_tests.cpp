@@ -4043,6 +4043,209 @@ bool test_pipeline_with_resize() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Deskew tests
+// ---------------------------------------------------------------------------
+
+bool test_detect_skew_angle_zero() {
+    using namespace ppp::core;
+
+    // Create a BW1 image with horizontal text lines (no skew).
+    // 200x100 with 3 horizontal lines of foreground pixels.
+    Image img(200, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // All white (BW1: 0 = white).
+
+    // Draw 3 horizontal lines at y=20, y=50, y=80.
+    for (int line : {20, 50, 80}) {
+        for (int x = 10; x < 190; ++x) {
+            img.set_bw_pixel(x, line, 1);
+            img.set_bw_pixel(x, line + 1, 1);
+        }
+    }
+
+    double angle = ops::detect_skew_angle(img);
+    // Horizontal lines should produce angle near zero.
+    if (std::abs(angle) > 0.5) {
+        std::cerr << "detect_skew_angle zero: expected ~0, got " << angle << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_rotate_arbitrary_identity() {
+    using namespace ppp::core;
+
+    // Rotating by 0 degrees should return the same image.
+    Image img(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(128);
+    img.row(20)[25] = 42;  // Set a distinctive pixel.
+
+    Image rotated = ops::rotate_arbitrary(img, 0.0);
+    if (rotated.width() != 50 || rotated.height() != 40) {
+        std::cerr << "rotate_arbitrary identity: wrong size" << std::endl;
+        return false;
+    }
+    if (rotated.row(20)[25] != 42) {
+        std::cerr << "rotate_arbitrary identity: pixel mismatch" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_rotate_arbitrary_bw1() {
+    using namespace ppp::core;
+
+    // A small BW1 image rotated by a small angle should produce a valid result.
+    Image img(100, 80, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // White.
+
+    // Draw a horizontal line.
+    for (int x = 10; x < 90; ++x) {
+        img.set_bw_pixel(x, 40, 1);
+    }
+
+    Image rotated = ops::rotate_arbitrary(img, 2.0);
+    // Output should be larger (to contain rotated content without clipping).
+    if (rotated.empty()) {
+        std::cerr << "rotate_arbitrary BW1: empty result" << std::endl;
+        return false;
+    }
+    if (rotated.format() != PixelFormat::BW1) {
+        std::cerr << "rotate_arbitrary BW1: wrong format" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_apply_deskew_disabled() {
+    using namespace ppp::core;
+
+    Image img(100, 80, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    DeskewConfig config;
+    config.enabled = false;
+
+    auto result = ops::apply_deskew(img, config);
+    if (result.corrected) {
+        std::cerr << "apply_deskew disabled: should not correct" << std::endl;
+        return false;
+    }
+    if (result.angle != 0.0) {
+        std::cerr << "apply_deskew disabled: angle should be 0" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_apply_deskew_below_threshold() {
+    using namespace ppp::core;
+
+    // Create an image with perfectly horizontal lines — angle should be ~0,
+    // which is below min_angle threshold, so correction should not be applied.
+    Image img(200, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    for (int line : {20, 50, 80}) {
+        for (int x = 10; x < 190; ++x) {
+            img.set_bw_pixel(x, line, 1);
+            img.set_bw_pixel(x, line + 1, 1);
+        }
+    }
+
+    DeskewConfig config;
+    config.enabled = true;
+    config.min_angle = 0.5;  // Only correct angles >= 0.5 degrees.
+    config.max_angle = 5.0;
+
+    auto result = ops::apply_deskew(img, config);
+    // Angle should be near zero, below threshold — not corrected.
+    if (result.corrected) {
+        std::cerr << "apply_deskew below threshold: should not correct, angle="
+                  << result.angle << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_pipeline_deskew_step() {
+    using namespace ppp::core;
+
+    // Test that deskew step appears in pipeline output.
+    Image img(200, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Horizontal lines.
+    for (int line : {20, 50, 80}) {
+        for (int x = 10; x < 190; ++x) {
+            img.set_bw_pixel(x, line, 1);
+        }
+    }
+
+    ProcessingProfile profile;
+    profile.deskew.enabled = true;
+    profile.deskew.min_angle = 0.05;
+    profile.deskew.max_angle = 5.0;
+    profile.position_image = false;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) {
+        std::cerr << "pipeline deskew: failed: " << result.error << std::endl;
+        return false;
+    }
+
+    // Find the deskew step.
+    bool found_deskew = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "deskew") {
+            found_deskew = true;
+            // Should contain angle info.
+            if (s.detail.find("angle=") == std::string::npos) {
+                std::cerr << "pipeline deskew: missing angle in detail: "
+                          << s.detail << std::endl;
+                return false;
+            }
+        }
+    }
+    if (!found_deskew) {
+        std::cerr << "pipeline deskew: step not found" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_pipeline_run_step_deskew() {
+    using namespace ppp::core;
+
+    Image img(200, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    for (int x = 10; x < 190; ++x)
+        img.set_bw_pixel(x, 50, 1);
+
+    ProcessingProfile profile;
+    profile.deskew.enabled = true;
+    profile.deskew.min_angle = 0.05;
+    profile.deskew.max_angle = 5.0;
+
+    auto result = run_step(img, profile, "deskew");
+    if (!result.success) {
+        std::cerr << "run_step deskew: failed: " << result.error << std::endl;
+        return false;
+    }
+    if (result.steps.empty() || result.steps[0].name != "deskew") {
+        std::cerr << "run_step deskew: wrong step name" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -4134,6 +4337,13 @@ int main() {
         {"resize_no_enlarge", test_resize_no_enlarge},
         {"resize_alignment", test_resize_alignment},
         {"pipeline_with_resize", test_pipeline_with_resize},
+        {"detect_skew_angle_zero", test_detect_skew_angle_zero},
+        {"rotate_arbitrary_identity", test_rotate_arbitrary_identity},
+        {"rotate_arbitrary_bw1", test_rotate_arbitrary_bw1},
+        {"apply_deskew_disabled", test_apply_deskew_disabled},
+        {"apply_deskew_below_threshold", test_apply_deskew_below_threshold},
+        {"pipeline_deskew_step", test_pipeline_deskew_step},
+        {"pipeline_run_step_deskew", test_pipeline_run_step_deskew},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);

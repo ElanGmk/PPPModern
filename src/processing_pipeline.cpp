@@ -118,6 +118,31 @@ ProcessingStep step_despeckle(Image& img, const DespeckleConfig& config) {
     return step;
 }
 
+ProcessingStep step_deskew(Image& img, const DeskewConfig& config) {
+    ProcessingStep step{"deskew", false, ""};
+
+    if (!config.enabled) {
+        step.detail = "disabled";
+        return step;
+    }
+
+    auto deskew_result = ops::apply_deskew(img, config);
+    step.applied = deskew_result.corrected;
+
+    std::ostringstream oss;
+    oss << "angle=" << deskew_result.angle << " deg"
+        << ", confidence=" << deskew_result.confidence;
+    if (deskew_result.corrected) {
+        oss << ", corrected";
+        img = std::move(deskew_result.image);
+    } else {
+        oss << ", not corrected";
+    }
+    step.detail = oss.str();
+
+    return step;
+}
+
 ProcessingStep step_detect_subimage(const Image& img, const SubimageConfig& config,
                                      ops::SubimageResult& out_result) {
     ProcessingStep step{"detect_subimage", true, ""};
@@ -209,10 +234,8 @@ ProcessingResult run_pipeline(const Image& image,
             img, profile.edge_cleanup, page_index, profile.odd_even_mode));
     }
 
-    // 3. Deskew (not yet implemented).
-    if (profile.deskew.enabled) {
-        result.steps.push_back({"deskew", false, "not yet implemented"});
-    }
+    // 3. Deskew.
+    result.steps.push_back(step_deskew(img, profile.deskew));
 
     // 4. Hole cleanup.
     result.steps.push_back(step_hole_cleanup(
@@ -306,6 +329,8 @@ ProcessingResult run_step(const Image& image,
             img, profile.hole_cleanup, page_index, profile.odd_even_mode));
     } else if (step_name == "despeckle") {
         result.steps.push_back(step_despeckle(img, profile.despeckle));
+    } else if (step_name == "deskew") {
+        result.steps.push_back(step_deskew(img, profile.deskew));
     } else if (step_name == "detect_subimage") {
         ops::SubimageResult sub;
         result.steps.push_back(step_detect_subimage(img, profile.subimage, sub));

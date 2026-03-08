@@ -198,4 +198,53 @@ struct ResizeResult {
     std::size_t page_index = 0,
     bool odd_even_mode = false);
 
+// ---------------------------------------------------------------------------
+// Deskew — detect and correct page skew
+// ---------------------------------------------------------------------------
+
+/// Result of skew angle detection.
+struct DeskewResult {
+    double angle{0.0};      ///< Detected skew angle in degrees (positive = CW).
+    double confidence{0.0}; ///< Detection confidence (0.0 = no signal, 1.0 = strong).
+    bool corrected{false};  ///< Whether the image was actually rotated.
+    Image image;            ///< Corrected image (or copy of input if not corrected).
+};
+
+/// Detect the skew angle of a document image using projection profile analysis.
+///
+/// Projects foreground pixels at various angles and finds the angle that
+/// produces the sharpest horizontal projection (highest variance), which
+/// corresponds to text lines being perfectly horizontal.
+///
+/// @param image        Source image (converts to BW1 internally if needed).
+/// @param min_angle    Minimum angle to search (degrees, default -5.0).
+/// @param max_angle    Maximum angle to search (degrees, default +5.0).
+/// @param step         Angle search step (degrees, default 0.1).
+/// @return Detected skew angle in degrees.
+[[nodiscard]] double detect_skew_angle(
+    const Image& image,
+    double min_angle = -5.0,
+    double max_angle = 5.0,
+    double step = 0.1);
+
+/// Rotate an image by an arbitrary angle (degrees, positive = clockwise).
+///
+/// Uses bilinear interpolation for Gray8/RGB24/RGBA32 and nearest-neighbor
+/// for BW1.  The output image is large enough to contain the full rotated
+/// content (no clipping).  Background is filled with white (0xFF for
+/// grayscale/color, 0 for BW1).
+///
+/// @param image    Source image.
+/// @param angle    Rotation angle in degrees.
+/// @return Rotated image.
+[[nodiscard]] Image rotate_arbitrary(const Image& image, double angle);
+
+/// Detect and correct page skew according to DeskewConfig.
+///
+/// @param image    Source image.
+/// @param config   Deskew configuration (min/max angle, enabled flag, etc.).
+/// @return Deskew result with corrected image and detected angle.
+[[nodiscard]] DeskewResult apply_deskew(const Image& image,
+                                        const DeskewConfig& config);
+
 } // namespace ppp::core::ops

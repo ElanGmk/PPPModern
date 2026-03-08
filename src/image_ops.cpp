@@ -620,4 +620,254 @@ ResizeResult apply_resize(const Image& source,
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Skew angle detection via projection profile analysis
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr double PI = 3.14159265358979323846;
+
+/// Compute the variance of horizontal projection at a given angle.
+/// Higher variance = sharper peaks = text lines are more horizontal.
+double projection_variance(const Image& bw, double angle_deg) {
+    double angle_rad = angle_deg * PI / 180.0;
+    double cos_a = std::cos(angle_rad);
+    double sin_a = std::sin(angle_rad);
+
+    auto w = bw.width();
+    auto h = bw.height();
+
+    // Project each foreground pixel onto the vertical axis after rotation.
+    // y' = -x * sin(a) + y * cos(a)
+    // We need to find the range of y' to allocate the histogram.
+    double y_min = 0, y_max = 0;
+    double corners[4] = {
+        0,
+        -w * sin_a,
+        h * cos_a,
+        -w * sin_a + h * cos_a
+    };
+    for (double c : corners) {
+        y_min = std::min(y_min, c);
+        y_max = std::max(y_max, c);
+    }
+
+    int hist_size = static_cast<int>(y_max - y_min) + 2;
+    if (hist_size <= 0 || hist_size > 100000) return 0;
+
+    std::vector<int> hist(hist_size, 0);
+    int total_pixels = 0;
+
+    // Sample every Nth pixel for speed on large images.
+    int x_step = std::max(1, w / 500);
+    int y_step = std::max(1, h / 500);
+
+    for (std::int32_t y = 0; y < h; y += y_step) {
+        for (std::int32_t x = 0; x < w; x += x_step) {
+            if (bw.get_bw_pixel(x, y)) {
+                double yp = -x * sin_a + y * cos_a - y_min;
+                int bin = static_cast<int>(yp);
+                if (bin >= 0 && bin < hist_size) {
+                    hist[bin]++;
+                    total_pixels++;
+                }
+            }
+        }
+    }
+
+    if (total_pixels == 0) return 0;
+
+    // Compute variance of the histogram.
+    double mean = static_cast<double>(total_pixels) / hist_size;
+    double variance = 0;
+    for (int count : hist) {
+        double diff = count - mean;
+        variance += diff * diff;
+    }
+    variance /= hist_size;
+
+    return variance;
+}
+
+}  // namespace
+
+double detect_skew_angle(const Image& image,
+                         double min_angle, double max_angle, double step) {
+    if (image.empty()) return 0;
+
+    Image bw = (image.format() == PixelFormat::BW1)
+                   ? image
+                   : image.convert(PixelFormat::BW1);
+
+    // Coarse search.
+    double best_angle = 0;
+    double best_variance = 0;
+
+    for (double angle = min_angle; angle <= max_angle; angle += step) {
+        double var = projection_variance(bw, angle);
+        if (var > best_variance) {
+            best_variance = var;
+            best_angle = angle;
+        }
+    }
+
+    // Fine search around the best angle.
+    double fine_step = step / 10.0;
+    double fine_min = best_angle - step;
+    double fine_max = best_angle + step;
+
+    for (double angle = fine_min; angle <= fine_max; angle += fine_step) {
+        double var = projection_variance(bw, angle);
+        if (var > best_variance) {
+            best_variance = var;
+            best_angle = angle;
+        }
+    }
+
+    return best_angle;
+}
+
+// ---------------------------------------------------------------------------
+// Arbitrary angle rotation
+// ---------------------------------------------------------------------------
+
+Image rotate_arbitrary(const Image& image, double angle) {
+    if (image.empty()) return {};
+    if (std::abs(angle) < 0.001) return image;  // No rotation needed.
+
+    double angle_rad = angle * PI / 180.0;
+    double cos_a = std::cos(angle_rad);
+    double sin_a = std::sin(angle_rad);
+
+    auto w = image.width();
+    auto h = image.height();
+
+    // Compute output dimensions to contain the full rotated image.
+    double abs_cos = std::abs(cos_a);
+    double abs_sin = std::abs(sin_a);
+    auto new_w = static_cast<std::int32_t>(std::ceil(w * abs_cos + h * abs_sin));
+    auto new_h = static_cast<std::int32_t>(std::ceil(w * abs_sin + h * abs_cos));
+
+    Image result(new_w, new_h, image.format(), image.dpi_x(), image.dpi_y());
+    if (image.format() != PixelFormat::BW1) {
+        result.fill(0xFF);  // White background.
+    }
+
+    // Center of source and destination.
+    double cx_src = w / 2.0;
+    double cy_src = h / 2.0;
+    double cx_dst = new_w / 2.0;
+    double cy_dst = new_h / 2.0;
+
+    if (image.format() == PixelFormat::BW1) {
+        // Nearest-neighbor for BW1.
+        for (std::int32_t dy = 0; dy < new_h; ++dy) {
+            for (std::int32_t dx = 0; dx < new_w; ++dx) {
+                // Map destination to source (inverse rotation).
+                double rx = dx - cx_dst;
+                double ry = dy - cy_dst;
+                double sx = rx * cos_a + ry * sin_a + cx_src;
+                double sy = -rx * sin_a + ry * cos_a + cy_src;
+
+                auto ix = static_cast<std::int32_t>(std::round(sx));
+                auto iy = static_cast<std::int32_t>(std::round(sy));
+
+                if (ix >= 0 && ix < w && iy >= 0 && iy < h) {
+                    result.set_bw_pixel(dx, dy, image.get_bw_pixel(ix, iy));
+                }
+            }
+        }
+    } else {
+        // Bilinear interpolation for grayscale/color.
+        std::size_t bpp = bytes_per_pixel(image.format());
+        int channels = static_cast<int>(bpp);
+
+        for (std::int32_t dy = 0; dy < new_h; ++dy) {
+            auto* dst_row = result.row(dy);
+            for (std::int32_t dx = 0; dx < new_w; ++dx) {
+                double rx = dx - cx_dst;
+                double ry = dy - cy_dst;
+                double sx = rx * cos_a + ry * sin_a + cx_src;
+                double sy = -rx * sin_a + ry * cos_a + cy_src;
+
+                if (sx < 0 || sx >= w - 1 || sy < 0 || sy >= h - 1) continue;
+
+                auto x0 = static_cast<std::int32_t>(sx);
+                auto y0 = static_cast<std::int32_t>(sy);
+                auto x1 = std::min(x0 + 1, w - 1);
+                auto y1 = std::min(y0 + 1, h - 1);
+                double fx = sx - x0;
+                double fy = sy - y0;
+
+                const auto* r0 = image.row(y0);
+                const auto* r1 = image.row(y1);
+
+                for (int c = 0; c < channels; ++c) {
+                    double v00 = r0[static_cast<std::size_t>(x0) * bpp + c];
+                    double v10 = r0[static_cast<std::size_t>(x1) * bpp + c];
+                    double v01 = r1[static_cast<std::size_t>(x0) * bpp + c];
+                    double v11 = r1[static_cast<std::size_t>(x1) * bpp + c];
+
+                    double v = v00 * (1 - fx) * (1 - fy)
+                             + v10 * fx * (1 - fy)
+                             + v01 * (1 - fx) * fy
+                             + v11 * fx * fy;
+
+                    dst_row[static_cast<std::size_t>(dx) * bpp + c] =
+                        static_cast<std::uint8_t>(std::clamp(v + 0.5, 0.0, 255.0));
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Full deskew operation
+// ---------------------------------------------------------------------------
+
+DeskewResult apply_deskew(const Image& image, const DeskewConfig& config) {
+    DeskewResult result;
+    result.image = image;  // Default: return input unchanged.
+
+    if (!config.enabled || image.empty()) return result;
+
+    // Detect skew angle.
+    result.angle = detect_skew_angle(
+        image, -config.max_angle, config.max_angle, 0.1);
+
+    // Compute confidence as ratio of detected variance at best angle
+    // vs variance at zero angle.
+    {
+        Image bw = (image.format() == PixelFormat::BW1)
+                       ? image
+                       : image.convert(PixelFormat::BW1);
+        double var_at_best = projection_variance(bw, result.angle);
+        double var_at_zero = projection_variance(bw, 0);
+        if (var_at_zero > 0) {
+            result.confidence = std::clamp(
+                (var_at_best - var_at_zero) / var_at_zero, 0.0, 1.0);
+        }
+    }
+
+    // Check if angle is within the correction range.
+    double abs_angle = std::abs(result.angle);
+    if (abs_angle < config.min_angle) {
+        // Skew is below minimum threshold — don't correct.
+        return result;
+    }
+    if (abs_angle > config.max_angle) {
+        // Shouldn't happen given search range, but guard.
+        return result;
+    }
+
+    // Apply rotation to correct the skew.
+    result.image = rotate_arbitrary(image, result.angle);
+    result.corrected = true;
+
+    return result;
+}
+
 } // namespace ppp::core::ops
