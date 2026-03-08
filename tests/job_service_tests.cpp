@@ -12,6 +12,7 @@
 #include "ppp/core/image_ops.h"
 #include "ppp/core/processing_pipeline.h"
 #include "ppp/core/tiff_writer.h"
+#include "ppp/core/bmp.h"
 
 #include <algorithm>
 #include <chrono>
@@ -4044,6 +4045,242 @@ bool test_pipeline_with_resize() {
 }
 
 // ---------------------------------------------------------------------------
+// BMP tests
+// ---------------------------------------------------------------------------
+
+bool test_bmp_write_read_gray8() {
+    using namespace ppp::core;
+
+    Image img(40, 30, PixelFormat::Gray8, 150.0, 150.0);
+    img.fill(0);
+    // Draw a gradient pattern.
+    for (int y = 0; y < 30; ++y)
+        for (int x = 0; x < 40; ++x)
+            img.row(y)[x] = static_cast<std::uint8_t>((x * 6) & 0xFF);
+
+    auto buf = bmp::write_bmp_to_memory(img);
+    if (buf.empty()) { std::cerr << "bmp gray8 write failed" << std::endl; return false; }
+
+    // Check BMP signature.
+    if (buf[0] != 'B' || buf[1] != 'M') {
+        std::cerr << "bmp gray8: bad signature" << std::endl;
+        return false;
+    }
+
+    // Round-trip.
+    auto img2 = bmp::read_bmp(buf.data(), buf.size());
+    if (img2.empty()) { std::cerr << "bmp gray8 read failed" << std::endl; return false; }
+    if (img2.width() != 40 || img2.height() != 30) {
+        std::cerr << "bmp gray8: wrong size " << img2.width() << "x" << img2.height() << std::endl;
+        return false;
+    }
+    if (img2.format() != PixelFormat::Gray8) {
+        std::cerr << "bmp gray8: wrong format" << std::endl;
+        return false;
+    }
+
+    // Verify pixel data.
+    for (int y = 0; y < 30; ++y) {
+        for (int x = 0; x < 40; ++x) {
+            if (img2.row(y)[x] != img.row(y)[x]) {
+                std::cerr << "bmp gray8: pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_bmp_write_read_rgb24() {
+    using namespace ppp::core;
+
+    Image img(25, 20, PixelFormat::RGB24, 200.0, 200.0);
+    img.fill(0);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 25; ++x) {
+            auto* p = img.row(y) + x * 3;
+            p[0] = static_cast<std::uint8_t>(x * 10);      // R.
+            p[1] = static_cast<std::uint8_t>(y * 12);      // G.
+            p[2] = static_cast<std::uint8_t>((x + y) * 5); // B.
+        }
+    }
+
+    auto buf = bmp::write_bmp_to_memory(img);
+    if (buf.empty()) { std::cerr << "bmp rgb24 write failed" << std::endl; return false; }
+
+    auto img2 = bmp::read_bmp(buf.data(), buf.size());
+    if (img2.empty()) { std::cerr << "bmp rgb24 read failed" << std::endl; return false; }
+    if (img2.width() != 25 || img2.height() != 20 || img2.format() != PixelFormat::RGB24) {
+        std::cerr << "bmp rgb24: wrong dims/format" << std::endl;
+        return false;
+    }
+
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 25; ++x) {
+            const auto* a = img.row(y) + x * 3;
+            const auto* b = img2.row(y) + x * 3;
+            if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2]) {
+                std::cerr << "bmp rgb24: pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_bmp_write_read_bw1() {
+    using namespace ppp::core;
+
+    Image img(80, 50, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // White.
+    // Draw a diagonal stripe.
+    for (int y = 0; y < 50; ++y) {
+        int x = y;
+        if (x < 80) img.set_bw_pixel(x, y, 1);
+        if (x + 1 < 80) img.set_bw_pixel(x + 1, y, 1);
+    }
+
+    auto buf = bmp::write_bmp_to_memory(img);
+    if (buf.empty()) { std::cerr << "bmp bw1 write failed" << std::endl; return false; }
+
+    auto img2 = bmp::read_bmp(buf.data(), buf.size());
+    if (img2.empty()) { std::cerr << "bmp bw1 read failed" << std::endl; return false; }
+    if (img2.width() != 80 || img2.height() != 50 || img2.format() != PixelFormat::BW1) {
+        std::cerr << "bmp bw1: wrong dims/format" << std::endl;
+        return false;
+    }
+
+    for (int y = 0; y < 50; ++y) {
+        for (int x = 0; x < 80; ++x) {
+            if (img2.get_bw_pixel(x, y) != img.get_bw_pixel(x, y)) {
+                std::cerr << "bmp bw1: pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_bmp_write_read_rgba32() {
+    using namespace ppp::core;
+
+    Image img(15, 10, PixelFormat::RGBA32, 96.0, 96.0);
+    img.fill(0);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 15; ++x) {
+            auto* p = img.row(y) + x * 4;
+            p[0] = static_cast<std::uint8_t>(x * 17);
+            p[1] = static_cast<std::uint8_t>(y * 25);
+            p[2] = static_cast<std::uint8_t>(128);
+            p[3] = static_cast<std::uint8_t>(255);
+        }
+    }
+
+    auto buf = bmp::write_bmp_to_memory(img);
+    if (buf.empty()) { std::cerr << "bmp rgba32 write failed" << std::endl; return false; }
+
+    auto img2 = bmp::read_bmp(buf.data(), buf.size());
+    if (img2.empty()) { std::cerr << "bmp rgba32 read failed" << std::endl; return false; }
+    if (img2.width() != 15 || img2.height() != 10 || img2.format() != PixelFormat::RGBA32) {
+        std::cerr << "bmp rgba32: wrong dims/format" << std::endl;
+        return false;
+    }
+
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 15; ++x) {
+            const auto* a = img.row(y) + x * 4;
+            const auto* b = img2.row(y) + x * 4;
+            if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2] || a[3] != b[3]) {
+                std::cerr << "bmp rgba32: pixel mismatch at (" << x << "," << y << ")" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_bmp_file_roundtrip() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(60, 45, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0);
+    for (int y = 10; y < 35; ++y)
+        for (int x = 15; x < 50; ++x)
+            img.row(y)[x] = 200;
+
+    auto tmp = fs::temp_directory_path() / "ppp_bmp_test.bmp";
+    if (!bmp::write_bmp(img, tmp)) {
+        std::cerr << "bmp file write failed" << std::endl;
+        return false;
+    }
+
+    auto img2 = bmp::read_bmp_file(tmp);
+    fs::remove(tmp);
+
+    if (img2.empty()) { std::cerr << "bmp file read failed" << std::endl; return false; }
+    if (img2.width() != 60 || img2.height() != 45) {
+        std::cerr << "bmp file: wrong size" << std::endl;
+        return false;
+    }
+
+    // Check a sample pixel.
+    if (img2.row(20)[30] != 200) {
+        std::cerr << "bmp file: pixel value mismatch" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_bmp_invalid_data() {
+    using namespace ppp::core;
+
+    // Empty data.
+    auto img1 = bmp::read_bmp(nullptr, 0);
+    if (!img1.empty()) { std::cerr << "bmp: should reject null" << std::endl; return false; }
+
+    // Too small.
+    std::uint8_t small[10] = {0};
+    auto img2 = bmp::read_bmp(small, sizeof(small));
+    if (!img2.empty()) { std::cerr << "bmp: should reject small" << std::endl; return false; }
+
+    // Wrong signature.
+    std::uint8_t bad_sig[30] = {0};
+    bad_sig[0] = 'X'; bad_sig[1] = 'Y';
+    auto img3 = bmp::read_bmp(bad_sig, sizeof(bad_sig));
+    if (!img3.empty()) { std::cerr << "bmp: should reject bad signature" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_bmp_dpi_preservation() {
+    using namespace ppp::core;
+
+    Image img(20, 15, PixelFormat::Gray8, 400.0, 350.0);
+    img.fill(128);
+
+    auto buf = bmp::write_bmp_to_memory(img);
+    auto img2 = bmp::read_bmp(buf.data(), buf.size());
+    if (img2.empty()) { std::cerr << "bmp dpi: read failed" << std::endl; return false; }
+
+    // DPI should be approximately preserved (rounding through ppm conversion).
+    double dx = std::abs(img2.dpi_x() - 400.0);
+    double dy = std::abs(img2.dpi_y() - 350.0);
+    if (dx > 1.0 || dy > 1.0) {
+        std::cerr << "bmp dpi: " << img2.dpi_x() << "x" << img2.dpi_y()
+                  << " (expected ~400x350)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Deskew tests
 // ---------------------------------------------------------------------------
 
@@ -4337,6 +4574,13 @@ int main() {
         {"resize_no_enlarge", test_resize_no_enlarge},
         {"resize_alignment", test_resize_alignment},
         {"pipeline_with_resize", test_pipeline_with_resize},
+        {"bmp_write_read_gray8", test_bmp_write_read_gray8},
+        {"bmp_write_read_rgb24", test_bmp_write_read_rgb24},
+        {"bmp_write_read_bw1", test_bmp_write_read_bw1},
+        {"bmp_write_read_rgba32", test_bmp_write_read_rgba32},
+        {"bmp_file_roundtrip", test_bmp_file_roundtrip},
+        {"bmp_invalid_data", test_bmp_invalid_data},
+        {"bmp_dpi_preservation", test_bmp_dpi_preservation},
         {"detect_skew_angle_zero", test_detect_skew_angle_zero},
         {"rotate_arbitrary_identity", test_rotate_arbitrary_identity},
         {"rotate_arbitrary_bw1", test_rotate_arbitrary_bw1},
