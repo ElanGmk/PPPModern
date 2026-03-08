@@ -253,6 +253,71 @@ void despeckle(Image& image, const DespeckleConfig& config) {
 }
 
 // ---------------------------------------------------------------------------
+// Blank page detection
+// ---------------------------------------------------------------------------
+
+BlankPageResult detect_blank_page(const Image& image,
+                                   const BlankPageConfig& config,
+                                   double dpi_x, double dpi_y) {
+    BlankPageResult result;
+
+    if (image.empty()) {
+        result.is_blank = true;
+        return result;
+    }
+
+    // Convert to BW1 for analysis.
+    Image bw = (image.format() == PixelFormat::BW1)
+                   ? image
+                   : image.convert(PixelFormat::BW1);
+
+    // Compute edge margin in pixels.
+    auto margin_px_x = static_cast<std::int32_t>(to_pixels(config.edge_margin, dpi_x));
+    auto margin_px_y = static_cast<std::int32_t>(to_pixels(config.edge_margin, dpi_y));
+
+    // Define the analysis region (inset by margin).
+    std::int32_t x0 = std::min(margin_px_x, bw.width() / 2);
+    std::int32_t y0 = std::min(margin_px_y, bw.height() / 2);
+    std::int32_t x1 = std::max(bw.width() - margin_px_x, x0);
+    std::int32_t y1 = std::max(bw.height() - margin_px_y, y0);
+
+    // Count foreground pixels in the analysis region.
+    std::int32_t fg_count = 0;
+    std::int32_t total = (x1 - x0) * (y1 - y0);
+
+    for (std::int32_t y = y0; y < y1; ++y) {
+        for (std::int32_t x = x0; x < x1; ++x) {
+            if (bw.get_bw_pixel(x, y)) {
+                ++fg_count;
+            }
+        }
+    }
+
+    result.total_pixels = total;
+    result.foreground_pixels = fg_count;
+    result.foreground_percent = (total > 0)
+        ? (static_cast<double>(fg_count) / static_cast<double>(total)) * 100.0
+        : 0.0;
+
+    // Count connected components if min_components is set.
+    if (config.min_components > 0) {
+        geometry::Rect roi{x0, y0, x1, y1};
+        auto spans = geometry::spans_from_bitmap(
+            bw.data(), bw.width(), bw.height(), bw.stride(), 1);
+        auto components = geometry::find_components(spans, roi, 4);
+        result.component_count = static_cast<std::int32_t>(components.size());
+    }
+
+    // Determine blank status.
+    result.is_blank = (result.foreground_percent < config.threshold_percent);
+    if (config.min_components > 0 && result.component_count < config.min_components) {
+        result.is_blank = true;
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Canvas sizing
 // ---------------------------------------------------------------------------
 

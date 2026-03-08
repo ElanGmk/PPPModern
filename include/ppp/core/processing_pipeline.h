@@ -32,6 +32,8 @@ struct ProcessingResult {
     std::vector<ProcessingStep> steps;      ///< Log of what was done.
     geometry::Rect subimage_bounds;         ///< Detected content bounds.
     ops::CanvasDimensions canvas;           ///< Resolved canvas size.
+    bool is_blank{false};                   ///< Whether blank page was detected.
+    ops::BlankPageResult blank_page_result; ///< Blank page detection metrics.
     bool success{true};
     std::string error;                      ///< Error message if !success.
 };

@@ -4045,6 +4045,196 @@ bool test_pipeline_with_resize() {
 }
 
 // ---------------------------------------------------------------------------
+// Blank page detection tests
+// ---------------------------------------------------------------------------
+
+bool test_blank_page_empty_image() {
+    using namespace ppp::core;
+
+    Image img;  // Empty.
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (!result.is_blank) {
+        std::cerr << "blank page: empty image should be blank" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_blank_page_white_image() {
+    using namespace ppp::core;
+
+    Image img(200, 150, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // All white.
+
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (!result.is_blank) {
+        std::cerr << "blank page: white image should be blank, fg%="
+                  << result.foreground_percent << std::endl;
+        return false;
+    }
+    if (result.foreground_percent != 0.0) {
+        std::cerr << "blank page: white image fg% should be 0" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_blank_page_content_image() {
+    using namespace ppp::core;
+
+    Image img(200, 150, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Fill a large block with foreground.
+    for (int y = 20; y < 130; ++y)
+        for (int x = 20; x < 180; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (result.is_blank) {
+        std::cerr << "blank page: content image should NOT be blank, fg%="
+                  << result.foreground_percent << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_blank_page_sparse_content() {
+    using namespace ppp::core;
+
+    Image img(200, 150, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Just a few pixels — well below 0.5%.
+    img.set_bw_pixel(50, 50, 1);
+    img.set_bw_pixel(100, 75, 1);
+    img.set_bw_pixel(150, 100, 1);
+
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (!result.is_blank) {
+        std::cerr << "blank page: sparse content should be blank, fg%="
+                  << result.foreground_percent << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_blank_page_edge_margin() {
+    using namespace ppp::core;
+
+    Image img(300, 300, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+
+    // Fill border strip (10 px wide) on all edges.
+    for (int x = 0; x < 300; ++x) {
+        for (int d = 0; d < 10; ++d) {
+            img.set_bw_pixel(x, d, 1);
+            img.set_bw_pixel(x, 299 - d, 1);
+        }
+    }
+    for (int y = 0; y < 300; ++y) {
+        for (int d = 0; d < 10; ++d) {
+            img.set_bw_pixel(d, y, 1);
+            img.set_bw_pixel(299 - d, y, 1);
+        }
+    }
+
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+    // 0.1 inches at 300 DPI = 30 pixels — excludes 10px border.
+    config.edge_margin = {0.1, MeasurementUnit::Inches};
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (!result.is_blank) {
+        std::cerr << "blank page edge margin: should be blank, fg%="
+                  << result.foreground_percent << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_blank_page_gray_input() {
+    using namespace ppp::core;
+
+    Image img(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0xFF);  // White.
+
+    BlankPageConfig config;
+    config.enabled = true;
+    config.threshold_percent = 0.5;
+
+    auto result = ops::detect_blank_page(img, config, 300.0, 300.0);
+    if (!result.is_blank) {
+        std::cerr << "blank page gray: white image should be blank" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_pipeline_blank_page_step() {
+    using namespace ppp::core;
+
+    Image img(200, 150, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // White/blank.
+
+    ProcessingProfile profile;
+    profile.blank_page.enabled = true;
+    profile.blank_page.threshold_percent = 0.5;
+    profile.position_image = false;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) {
+        std::cerr << "pipeline blank: failed: " << result.error << std::endl;
+        return false;
+    }
+    if (!result.is_blank) {
+        std::cerr << "pipeline blank: should be blank" << std::endl;
+        return false;
+    }
+
+    bool found = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "blank_page" && s.applied) {
+            found = true;
+            if (s.detail.find("BLANK") == std::string::npos) {
+                std::cerr << "pipeline blank: detail should say BLANK: "
+                          << s.detail << std::endl;
+                return false;
+            }
+        }
+    }
+    if (!found) {
+        std::cerr << "pipeline blank: step not found" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // BMP tests
 // ---------------------------------------------------------------------------
 
@@ -4574,6 +4764,13 @@ int main() {
         {"resize_no_enlarge", test_resize_no_enlarge},
         {"resize_alignment", test_resize_alignment},
         {"pipeline_with_resize", test_pipeline_with_resize},
+        {"blank_page_empty_image", test_blank_page_empty_image},
+        {"blank_page_white_image", test_blank_page_white_image},
+        {"blank_page_content_image", test_blank_page_content_image},
+        {"blank_page_sparse_content", test_blank_page_sparse_content},
+        {"blank_page_edge_margin", test_blank_page_edge_margin},
+        {"blank_page_gray_input", test_blank_page_gray_input},
+        {"pipeline_blank_page_step", test_pipeline_blank_page_step},
         {"bmp_write_read_gray8", test_bmp_write_read_gray8},
         {"bmp_write_read_rgb24", test_bmp_write_read_rgb24},
         {"bmp_write_read_bw1", test_bmp_write_read_bw1},

@@ -93,6 +93,35 @@ void hole_cleanup(Image& image, const EdgeValues& edges,
 void despeckle(Image& image, const DespeckleConfig& config);
 
 // ---------------------------------------------------------------------------
+// Blank page detection
+// ---------------------------------------------------------------------------
+
+/// Result of blank page detection.
+struct BlankPageResult {
+    bool is_blank{false};           ///< Whether the page is considered blank.
+    double foreground_percent{0.0}; ///< Percentage of foreground pixels.
+    std::int32_t component_count{0};///< Number of connected components found.
+    std::int32_t total_pixels{0};   ///< Total pixels in the analysis region.
+    std::int32_t foreground_pixels{0}; ///< Foreground pixel count.
+};
+
+/// Detect whether a page is blank based on foreground pixel density.
+///
+/// Converts non-BW1 images internally.  Optionally excludes an edge margin
+/// from the analysis to ignore scanner artifacts.
+///
+/// @param image    Source image.
+/// @param config   Blank page detection configuration.
+/// @param dpi_x    Horizontal DPI (for edge margin conversion).
+/// @param dpi_y    Vertical DPI.
+/// @return Detection result with blank flag and metrics.
+[[nodiscard]] BlankPageResult detect_blank_page(
+    const Image& image,
+    const BlankPageConfig& config,
+    double dpi_x,
+    double dpi_y);
+
+// ---------------------------------------------------------------------------
 // Margin setting — position content within canvas
 // ---------------------------------------------------------------------------
 

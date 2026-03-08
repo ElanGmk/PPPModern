@@ -143,6 +143,32 @@ ProcessingStep step_deskew(Image& img, const DeskewConfig& config) {
     return step;
 }
 
+ProcessingStep step_blank_page(const Image& img, const BlankPageConfig& config,
+                                ops::BlankPageResult& out_result) {
+    ProcessingStep step{"blank_page", false, ""};
+
+    if (!config.enabled) {
+        step.detail = "disabled";
+        return step;
+    }
+
+    out_result = ops::detect_blank_page(img, config, img.dpi_x(), img.dpi_y());
+    step.applied = true;
+
+    std::ostringstream oss;
+    oss << (out_result.is_blank ? "BLANK" : "not blank")
+        << " (" << out_result.foreground_percent << "% foreground"
+        << ", " << out_result.foreground_pixels << "/"
+        << out_result.total_pixels << " px";
+    if (config.min_components > 0) {
+        oss << ", " << out_result.component_count << " components";
+    }
+    oss << ")";
+    step.detail = oss.str();
+
+    return step;
+}
+
 ProcessingStep step_detect_subimage(const Image& img, const SubimageConfig& config,
                                      ops::SubimageResult& out_result) {
     ProcessingStep step{"detect_subimage", true, ""};
@@ -260,7 +286,13 @@ ProcessingResult run_pipeline(const Image& image,
         result.subimage_bounds = {0, 0, img.width(), img.height()};
     }
 
-    // 8. Canvas resolution.
+    // 8. Blank page detection.
+    ops::BlankPageResult blank_result;
+    result.steps.push_back(step_blank_page(img, profile.blank_page, blank_result));
+    result.is_blank = blank_result.is_blank;
+    result.blank_page_result = blank_result;
+
+    // 9. Canvas resolution.
     result.canvas = ops::resolve_canvas(
         profile.canvas, img.dpi_x(), img.dpi_y(), img.width(), img.height());
 
@@ -331,6 +363,11 @@ ProcessingResult run_step(const Image& image,
         result.steps.push_back(step_despeckle(img, profile.despeckle));
     } else if (step_name == "deskew") {
         result.steps.push_back(step_deskew(img, profile.deskew));
+    } else if (step_name == "blank_page") {
+        ops::BlankPageResult blank_result;
+        result.steps.push_back(step_blank_page(img, profile.blank_page, blank_result));
+        result.is_blank = blank_result.is_blank;
+        result.blank_page_result = blank_result;
     } else if (step_name == "detect_subimage") {
         ops::SubimageResult sub;
         result.steps.push_back(step_detect_subimage(img, profile.subimage, sub));

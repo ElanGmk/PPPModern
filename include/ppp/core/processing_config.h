@@ -227,6 +227,24 @@ struct SubimageConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Blank page detection
+// ---------------------------------------------------------------------------
+
+struct BlankPageConfig {
+    bool enabled{false};
+    /// Foreground pixel percentage threshold.  If the percentage of foreground
+    /// pixels is below this value, the page is considered blank.
+    double threshold_percent{0.5};
+    /// Minimum number of connected components to consider the page non-blank.
+    /// A page with fewer components than this (even if above the pixel
+    /// threshold) may still be marked blank if the components are noise.
+    std::int32_t min_components{0};
+    /// Edge margin to ignore when computing blank page metrics.  Helps
+    /// exclude scanner artifacts at the edges.
+    Measurement edge_margin{0.0, MeasurementUnit::Inches};
+};
+
+// ---------------------------------------------------------------------------
 // Movement limits
 // ---------------------------------------------------------------------------
 
@@ -379,6 +397,7 @@ struct ProcessingProfile {
     EdgeCleanupConfig edge_cleanup;
     HoleCleanupConfig hole_cleanup;
     SubimageConfig subimage;
+    BlankPageConfig blank_page;
     MovementLimitConfig movement_limit;
 
     // Resize
