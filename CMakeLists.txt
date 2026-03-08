@@ -20,6 +20,7 @@ add_library(ppp_core
     src/tiff.cpp
     src/geometry.cpp
     src/image.cpp
+    src/image_ops.cpp
 )
 
 set(PPP_CORE_HAVE_SQLITE 0)

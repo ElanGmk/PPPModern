@@ -9,6 +9,7 @@
 #include "ppp/core/tiff.h"
 #include "ppp/core/geometry.h"
 #include "ppp/core/image.h"
+#include "ppp/core/image_ops.h"
 
 #include <algorithm>
 #include <chrono>
@@ -3020,6 +3021,290 @@ bool test_image_deep_copy() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Image operations tests
+// ---------------------------------------------------------------------------
+
+bool test_ops_unit_conversion() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Inches at 300 DPI.
+    Measurement m_in{1.0, MeasurementUnit::Inches};
+    if (std::abs(to_pixels(m_in, 300.0) - 300.0) > 0.01) return false;
+
+    // Pixels (identity).
+    Measurement m_px{150.0, MeasurementUnit::Pixels};
+    if (std::abs(to_pixels(m_px, 300.0) - 150.0) > 0.01) return false;
+
+    // Millimeters at 300 DPI: 25.4mm = 1 inch = 300px.
+    Measurement m_mm{25.4, MeasurementUnit::Millimeters};
+    if (std::abs(to_pixels(m_mm, 300.0) - 300.0) > 0.01) return false;
+
+    // Round-trip.
+    auto back = from_pixels(300.0, 300.0, MeasurementUnit::Inches);
+    if (std::abs(back.value - 1.0) > 0.01) return false;
+
+    return true;
+}
+
+bool test_ops_subimage_detection() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Create a 200x100 BW1 image with a 50x30 block of foreground.
+    Image bw(200, 100, PixelFormat::BW1, 300.0, 300.0);
+    for (int y = 20; y < 50; ++y)
+        for (int x = 40; x < 90; ++x)
+            bw.set_bw_pixel(x, y, 1);
+
+    SubimageConfig config;
+    config.min_width_px = 5;
+    config.min_height_px = 5;
+
+    auto result = detect_subimage(bw, config, 300.0, 300.0);
+    if (result.too_small) return false;
+    if (result.bounds.left != 40 || result.bounds.top != 20) {
+        std::cerr << "subimage bounds: left=" << result.bounds.left
+                  << " top=" << result.bounds.top << std::endl;
+        return false;
+    }
+    if (result.bounds.right != 90 || result.bounds.bottom != 50) {
+        std::cerr << "subimage bounds: right=" << result.bounds.right
+                  << " bottom=" << result.bounds.bottom << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_ops_subimage_filters_small() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Image with one tiny speck and one real component.
+    Image bw(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    // Speck: 2x2 at (5,5).
+    bw.set_bw_pixel(5, 5, 1);
+    bw.set_bw_pixel(6, 5, 1);
+    bw.set_bw_pixel(5, 6, 1);
+    bw.set_bw_pixel(6, 6, 1);
+    // Real content: 30x30 at (50,50).
+    for (int y = 50; y < 80; ++y)
+        for (int x = 50; x < 80; ++x)
+            bw.set_bw_pixel(x, y, 1);
+
+    SubimageConfig config;
+    config.min_width_px = 10;
+    config.min_height_px = 10;
+
+    auto result = detect_subimage(bw, config, 300.0, 300.0);
+    // Should only detect the 30x30 block, not the speck.
+    if (result.bounds.left != 50 || result.bounds.top != 50) return false;
+    if (result.bounds.right != 80 || result.bounds.bottom != 80) return false;
+    if (result.components.size() != 1) return false;
+
+    return true;
+}
+
+bool test_ops_edge_cleanup() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Fill entire 100x100 BW1 image with foreground.
+    Image bw(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    bw.fill(0xFF);
+
+    // Clean 10px from each edge.
+    EdgeValues edges;
+    edges.top = {10.0, MeasurementUnit::Pixels};
+    edges.bottom = {10.0, MeasurementUnit::Pixels};
+    edges.left = {10.0, MeasurementUnit::Pixels};
+    edges.right = {10.0, MeasurementUnit::Pixels};
+
+    edge_cleanup(bw, edges, 300.0, 300.0);
+
+    // Border pixels should be cleared.
+    if (bw.get_bw_pixel(0, 0) != 0) return false;
+    if (bw.get_bw_pixel(5, 5) != 0) return false;
+    if (bw.get_bw_pixel(99, 99) != 0) return false;
+    if (bw.get_bw_pixel(50, 0) != 0) return false;
+
+    // Interior pixels should remain.
+    if (bw.get_bw_pixel(50, 50) != 1) return false;
+    if (bw.get_bw_pixel(10, 10) != 1) return false;
+    if (bw.get_bw_pixel(89, 89) != 1) return false;
+
+    return true;
+}
+
+bool test_ops_despeckle_single_pixel() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    Image bw(100, 100, PixelFormat::BW1, 300.0, 300.0);
+
+    // Add single-pixel specks.
+    bw.set_bw_pixel(10, 10, 1);
+    bw.set_bw_pixel(50, 50, 1);
+
+    // Add a real 5x5 block.
+    for (int y = 70; y < 75; ++y)
+        for (int x = 70; x < 75; ++x)
+            bw.set_bw_pixel(x, y, 1);
+
+    DespeckleConfig config;
+    config.mode = DespeckleMode::SinglePixel;
+
+    despeckle(bw, config);
+
+    // Single pixels should be removed.
+    if (bw.get_bw_pixel(10, 10) != 0) return false;
+    if (bw.get_bw_pixel(50, 50) != 0) return false;
+
+    // Block should remain.
+    if (bw.get_bw_pixel(72, 72) != 1) return false;
+
+    return true;
+}
+
+bool test_ops_despeckle_object() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    Image bw(100, 100, PixelFormat::BW1, 300.0, 300.0);
+
+    // Small 3x3 object.
+    for (int y = 10; y < 13; ++y)
+        for (int x = 10; x < 13; ++x)
+            bw.set_bw_pixel(x, y, 1);
+
+    // Larger 20x20 object.
+    for (int y = 50; y < 70; ++y)
+        for (int x = 50; x < 70; ++x)
+            bw.set_bw_pixel(x, y, 1);
+
+    DespeckleConfig config;
+    config.mode = DespeckleMode::Object;
+    config.object_min = 1;
+    config.object_max = 5;  // Remove objects up to 5px max dimension.
+
+    despeckle(bw, config);
+
+    // 3x3 object (max dim = 3) should be removed.
+    if (bw.get_bw_pixel(11, 11) != 0) return false;
+
+    // 20x20 object should remain.
+    if (bw.get_bw_pixel(60, 60) != 1) return false;
+
+    return true;
+}
+
+bool test_ops_canvas_resolution() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Letter at 300 DPI.
+    CanvasConfig letter;
+    letter.preset = CanvasPreset::Letter;
+    letter.orientation = Orientation::Portrait;
+
+    auto dims = resolve_canvas(letter, 300.0, 300.0, 0, 0);
+    if (dims.width != 2550) { std::cerr << "letter width: " << dims.width << std::endl; return false; }
+    if (dims.height != 3300) { std::cerr << "letter height: " << dims.height << std::endl; return false; }
+
+    // Landscape.
+    letter.orientation = Orientation::Landscape;
+    dims = resolve_canvas(letter, 300.0, 300.0, 0, 0);
+    if (dims.width != 3300 || dims.height != 2550) return false;
+
+    // Autodetect.
+    CanvasConfig autodet;
+    autodet.preset = CanvasPreset::Autodetect;
+    dims = resolve_canvas(autodet, 300.0, 300.0, 1000, 2000);
+    if (dims.width != 1000 || dims.height != 2000) return false;
+
+    // A4 at 300 DPI.
+    CanvasConfig a4;
+    a4.preset = CanvasPreset::A4;
+    a4.orientation = Orientation::Portrait;
+    dims = resolve_canvas(a4, 300.0, 300.0, 0, 0);
+    // A4 = 210mm x 297mm = 8.267" x 11.692"
+    // At 300 DPI: ~2480 x 3508
+    if (dims.width < 2470 || dims.width > 2490) { std::cerr << "A4 width: " << dims.width << std::endl; return false; }
+    if (dims.height < 3498 || dims.height > 3518) { std::cerr << "A4 height: " << dims.height << std::endl; return false; }
+
+    return true;
+}
+
+bool test_ops_apply_margins() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // 50x30 content at (20,10) in a 100x80 source.
+    Image src(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    src.fill(0xFF);  // White background.
+    for (int y = 10; y < 40; ++y)
+        for (int x = 20; x < 70; ++x)
+            src.row(y)[x] = 0;  // Black content.
+
+    geometry::Rect subimage{20, 10, 70, 40};
+
+    MarginConfig margins;
+    margins.top.distance = {30.0, MeasurementUnit::Pixels};
+    margins.left.distance = {25.0, MeasurementUnit::Pixels};
+
+    // Place on a 200x150 canvas.
+    auto result = apply_margins(src, subimage, margins, 200, 150,
+                                false, 300.0, 300.0);
+
+    if (result.image.width() != 200 || result.image.height() != 150) return false;
+
+    // Content should be at (25, 30).
+    if (result.content_rect.left != 25 || result.content_rect.top != 30) {
+        std::cerr << "content at: " << result.content_rect.left
+                  << "," << result.content_rect.top << std::endl;
+        return false;
+    }
+
+    // Check that a content pixel is black.
+    if (result.image.row(35)[30] != 0) return false;  // Inside content.
+    // Check that border is white.
+    if (result.image.row(0)[0] != 0xFF) return false;
+
+    return true;
+}
+
+bool test_ops_apply_margins_centered() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // 20x20 content centered in 100x100 canvas.
+    Image src(50, 50, PixelFormat::Gray8, 300.0, 300.0);
+    src.fill(0xFF);
+    for (int y = 10; y < 30; ++y)
+        for (int x = 10; x < 30; ++x)
+            src.row(y)[x] = 0;
+
+    geometry::Rect subimage{10, 10, 30, 30};
+
+    MarginConfig margins;
+    margins.center_horizontal = true;
+    margins.center_vertical = true;
+
+    auto result = apply_margins(src, subimage, margins, 100, 100,
+                                false, 300.0, 300.0);
+
+    // Content (20x20) centered in 100x100 → at (40, 40).
+    if (result.content_rect.left != 40 || result.content_rect.top != 40) {
+        std::cerr << "centered at: " << result.content_rect.left
+                  << "," << result.content_rect.top << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -3077,6 +3362,15 @@ int main() {
         {"image_convert_bw_to_gray", test_image_convert_bw_to_gray},
         {"image_convert_rgb_to_gray", test_image_convert_rgb_to_gray},
         {"image_deep_copy", test_image_deep_copy},
+        {"ops_unit_conversion", test_ops_unit_conversion},
+        {"ops_subimage_detection", test_ops_subimage_detection},
+        {"ops_subimage_filters_small", test_ops_subimage_filters_small},
+        {"ops_edge_cleanup", test_ops_edge_cleanup},
+        {"ops_despeckle_single_pixel", test_ops_despeckle_single_pixel},
+        {"ops_despeckle_object", test_ops_despeckle_object},
+        {"ops_canvas_resolution", test_ops_canvas_resolution},
+        {"ops_apply_margins", test_ops_apply_margins},
+        {"ops_apply_margins_centered", test_ops_apply_margins_centered},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);
