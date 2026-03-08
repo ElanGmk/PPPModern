@@ -6,6 +6,12 @@
 #include "ppp/core/processing_config_io.h"
 #include "ppp/core/scheduling_policy.h"
 #include "ppp/core/scheduling_policy_io.h"
+#include "ppp/core/bmp.h"
+#include "ppp/core/image.h"
+#include "ppp/core/image_ops.h"
+#include "ppp/core/output_writer.h"
+#include "ppp/core/processing_pipeline.h"
+#include "ppp/core/tiff_writer.h"
 
 #include <array>
 #include <chrono>
@@ -58,6 +64,8 @@ void print_usage() {
                  "  rebalance [--policy file|--policy-dir dir] [--within-minutes <min> <priority>]\n"
                  "                                     [--overdue <priority>] Escalate priorities based on due windows,\n"
                  "                                     policy files, or layered policy directories\n"
+                 "  process <image> [--profile path] [--output path] [--suffix text]\n"
+                 "                                     Process an image through the pipeline\n"
                  "  profile-init <path> [name]        Create a default processing profile as JSON\n"
                  "  profile-show <path>               Display a processing profile in human-readable form\n"
                  "  profile-validate <path>           Validate a processing profile JSON file\n"
@@ -1365,6 +1373,106 @@ try {
                   << " pdf=" << (p.output.pdf_output ? "yes" : "no") << "\n";
         std::cout << "jpeg_quality:      " << p.output.jpeg_quality << "\n";
         std::cout << "page_detection:    " << p.page_detection_style_sheet << "\n";
+        return 0;
+    }
+
+    if (command == "process") {
+        if (argc < 3) {
+            std::cerr << "Usage: ppp_jobctl process <image> [--profile path] [--output path] [--suffix text]" << std::endl;
+            return 1;
+        }
+        std::filesystem::path image_path{argv[2]};
+        std::filesystem::path profile_path;
+        std::filesystem::path output_path;
+        std::string suffix;
+
+        for (int i = 3; i < argc; ++i) {
+            std::string_view arg{argv[i]};
+            if (arg == "--profile" && i + 1 < argc) {
+                profile_path = argv[++i];
+            } else if (arg == "--output" && i + 1 < argc) {
+                output_path = argv[++i];
+            } else if (arg == "--suffix" && i + 1 < argc) {
+                suffix = argv[++i];
+            }
+        }
+
+        // Load image (detect format from extension).
+        ppp::core::Image img;
+        auto ext = image_path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (ext == ".bmp") {
+            img = ppp::core::bmp::read_bmp_file(image_path);
+        } else if (ext == ".tif" || ext == ".tiff") {
+            img = ppp::core::tiff::read_tiff_image_file(image_path);
+        } else {
+            // Try TIFF first, then BMP.
+            img = ppp::core::tiff::read_tiff_image_file(image_path);
+            if (img.empty()) img = ppp::core::bmp::read_bmp_file(image_path);
+        }
+
+        if (img.empty()) {
+            std::cerr << "error: cannot read image: " << image_path.string() << std::endl;
+            return 1;
+        }
+        std::cout << "loaded: " << img.width() << "x" << img.height()
+                  << " " << static_cast<int>(img.format()) << "bpp"
+                  << " " << img.dpi_x() << "x" << img.dpi_y() << " dpi" << std::endl;
+
+        // Load or create default profile.
+        ppp::core::ProcessingProfile profile;
+        if (!profile_path.empty()) {
+            auto loaded = ppp::core::read_processing_profile(profile_path);
+            if (!loaded) {
+                std::cerr << "error: cannot load profile: " << profile_path.string() << std::endl;
+                return 1;
+            }
+            profile = std::move(*loaded);
+            std::cout << "profile: " << profile.name << std::endl;
+        }
+
+        // Run pipeline.
+        auto result = ppp::core::run_pipeline(img, profile);
+        if (!result.success) {
+            std::cerr << "error: pipeline failed: " << result.error << std::endl;
+            return 1;
+        }
+
+        // Print step log.
+        for (const auto& step : result.steps) {
+            std::cout << "  [" << (step.applied ? "+" : "-") << "] "
+                      << step.name << ": " << step.detail << std::endl;
+        }
+
+        if (result.is_blank) {
+            std::cout << "result: BLANK PAGE detected" << std::endl;
+        }
+
+        std::cout << "output: " << result.image.width() << "x" << result.image.height() << std::endl;
+
+        // Write output.
+        if (!output_path.empty()) {
+            auto write_result = ppp::core::output::write_output_to(
+                result.image, output_path, profile.output);
+            if (!write_result.success) {
+                std::cerr << "error: " << write_result.error << std::endl;
+                return 1;
+            }
+            std::cout << "wrote: " << write_result.output_path.string()
+                      << " (" << write_result.format << ")" << std::endl;
+        } else {
+            auto write_result = ppp::core::output::write_output(
+                result.image, image_path, profile.output, suffix);
+            if (!write_result.success) {
+                std::cerr << "error: " << write_result.error << std::endl;
+                return 1;
+            }
+            std::cout << "wrote: " << write_result.output_path.string()
+                      << " (" << write_result.format << ")" << std::endl;
+        }
+
         return 0;
     }
 
