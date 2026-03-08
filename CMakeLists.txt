@@ -17,6 +17,7 @@ add_library(ppp_core
     src/processing_config.cpp
     src/processing_config_io.cpp
     src/scheduling_policy_io.cpp
+    src/tiff.cpp
 )
 
 set(PPP_CORE_HAVE_SQLITE 0)

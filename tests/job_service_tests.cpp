@@ -6,6 +6,7 @@
 #include "ppp/core/processing_config_io.h"
 #include "ppp/core/scheduling_policy.h"
 #include "ppp/core/scheduling_policy_io.h"
+#include "ppp/core/tiff.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2314,6 +2315,216 @@ bool test_processing_profile_default_values() {
     return true;
 }
 
+// Helper: build a minimal TIFF in memory (little-endian, 1 IFD)
+std::vector<std::uint8_t> build_test_tiff() {
+    // Build a minimal valid TIFF with:
+    //   ImageWidth=100 (SHORT), ImageLength=200 (SHORT),
+    //   BitsPerSample=1 (SHORT), Compression=4 (Group4, SHORT),
+    //   PhotometricInterpretation=0 (WhiteIsZero, SHORT),
+    //   XResolution=300/1 (RATIONAL), YResolution=300/1 (RATIONAL)
+    //
+    // Layout: header(8) + IFD(2 + 7*12 + 4) = 8 + 90 = 98
+    //   then rational data at offset 98: 2 rationals * 8 bytes = 16
+    //   total = 114 bytes
+
+    std::vector<std::uint8_t> buf(114, 0);
+    auto put16 = [&](std::size_t off, std::uint16_t v) {
+        buf[off] = static_cast<std::uint8_t>(v & 0xFF);
+        buf[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+    };
+    auto put32 = [&](std::size_t off, std::uint32_t v) {
+        buf[off] = static_cast<std::uint8_t>(v & 0xFF);
+        buf[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+        buf[off + 2] = static_cast<std::uint8_t>((v >> 16) & 0xFF);
+        buf[off + 3] = static_cast<std::uint8_t>((v >> 24) & 0xFF);
+    };
+
+    // Header: "II" + magic 42 + first IFD offset 8
+    buf[0] = 'I'; buf[1] = 'I';
+    put16(2, 42);
+    put32(4, 8);
+
+    // IFD at offset 8
+    constexpr std::size_t ifd_off = 8;
+    constexpr std::uint16_t num_entries = 7;
+    put16(ifd_off, num_entries);
+
+    auto write_entry = [&](int idx, std::uint16_t tag, std::uint16_t type,
+                           std::uint32_t count, std::uint32_t value) {
+        std::size_t off = ifd_off + 2 + idx * 12;
+        put16(off, tag);
+        put16(off + 2, type);
+        put32(off + 4, count);
+        put32(off + 8, value);
+    };
+
+    // SHORT type = 3
+    write_entry(0, 256, 3, 1, 100);   // ImageWidth = 100
+    write_entry(1, 257, 3, 1, 200);   // ImageLength = 200
+    write_entry(2, 258, 3, 1, 1);     // BitsPerSample = 1
+    write_entry(3, 259, 3, 1, 4);     // Compression = Group4
+    write_entry(4, 262, 3, 1, 0);     // Photometric = WhiteIsZero
+
+    // RATIONAL type = 5, data at offset 98
+    write_entry(5, 282, 5, 1, 98);    // XResolution -> offset 98
+    write_entry(6, 283, 5, 1, 106);   // YResolution -> offset 106
+
+    // Next IFD = 0 (no more IFDs)
+    put32(ifd_off + 2 + num_entries * 12, 0);
+
+    // Rational data at offset 98: 300/1
+    put32(98, 300);  put32(102, 1);   // XResolution = 300/1
+    put32(106, 300); put32(110, 1);   // YResolution = 300/1
+
+    return buf;
+}
+
+bool test_tiff_parse_synthetic() {
+    using namespace ppp::core::tiff;
+
+    auto data = build_test_tiff();
+    auto tiff = Structure::read(data);
+    if (!tiff) {
+        std::cerr << "failed to parse synthetic TIFF" << std::endl;
+        return false;
+    }
+
+    if (tiff->page_count() != 1) {
+        std::cerr << "expected 1 page, got " << tiff->page_count() << std::endl;
+        return false;
+    }
+    if (tiff->byte_order() != ByteOrder::LittleEndian) {
+        std::cerr << "expected little-endian" << std::endl;
+        return false;
+    }
+
+    auto w = tiff->image_width();
+    if (!w || *w != 100) { std::cerr << "ImageWidth mismatch" << std::endl; return false; }
+
+    auto h = tiff->image_length();
+    if (!h || *h != 200) { std::cerr << "ImageLength mismatch" << std::endl; return false; }
+
+    auto xr = tiff->x_resolution();
+    if (!xr || *xr != 300.0) { std::cerr << "XResolution mismatch" << std::endl; return false; }
+
+    auto yr = tiff->y_resolution();
+    if (!yr || *yr != 300.0) { std::cerr << "YResolution mismatch" << std::endl; return false; }
+
+    auto comp = tiff->compression();
+    if (!comp || *comp != Compression::Group4Fax) { std::cerr << "Compression mismatch" << std::endl; return false; }
+
+    auto photo = tiff->photometric();
+    if (!photo || *photo != Photometric::WhiteIsZero) { std::cerr << "Photometric mismatch" << std::endl; return false; }
+
+    auto bps = tiff->bits_per_sample();
+    if (!bps || *bps != 1) { std::cerr << "BitsPerSample mismatch" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_tiff_ifd_accessors() {
+    using namespace ppp::core::tiff;
+
+    Ifd ifd;
+
+    // Set an integer tag
+    IfdEntry width_entry;
+    width_entry.type = FieldType::Short;
+    width_entry.value = std::vector<std::uint16_t>{1024};
+    ifd.set(Tag::ImageWidth, width_entry);
+
+    // Set a string tag
+    IfdEntry software_entry;
+    software_entry.type = FieldType::Ascii;
+    software_entry.value = std::string{"PPP Modern"};
+    ifd.set(Tag::Software, software_entry);
+
+    // Set a rational tag
+    IfdEntry xres_entry;
+    xres_entry.type = FieldType::Rational;
+    xres_entry.value = std::vector<Rational>{{600, 1}};
+    ifd.set(Tag::XResolution, xres_entry);
+
+    // Test lookups
+    auto w = ifd.get_int(Tag::ImageWidth);
+    if (!w || *w != 1024) { std::cerr << "IFD ImageWidth mismatch" << std::endl; return false; }
+
+    auto sw = ifd.get_string(Tag::Software);
+    if (!sw || *sw != "PPP Modern") { std::cerr << "IFD Software mismatch" << std::endl; return false; }
+
+    auto xr = ifd.get_double(Tag::XResolution);
+    if (!xr || *xr != 600.0) { std::cerr << "IFD XResolution mismatch" << std::endl; return false; }
+
+    // Missing tag
+    if (ifd.find(Tag::YResolution) != nullptr) {
+        std::cerr << "IFD should not find YResolution" << std::endl;
+        return false;
+    }
+    if (ifd.get_int(Tag::YResolution).has_value()) {
+        std::cerr << "IFD missing tag should return nullopt" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_tiff_invalid_data() {
+    using namespace ppp::core::tiff;
+
+    // Too short
+    if (Structure::read(nullptr, 0).has_value()) { std::cerr << "should reject empty" << std::endl; return false; }
+
+    std::vector<std::uint8_t> short_data = {'I', 'I', 42, 0};
+    if (Structure::read(short_data).has_value()) { std::cerr << "should reject too short" << std::endl; return false; }
+
+    // Bad magic
+    std::vector<std::uint8_t> bad_magic = {'I', 'I', 0, 0, 0, 0, 0, 0};
+    if (Structure::read(bad_magic).has_value()) { std::cerr << "should reject bad magic" << std::endl; return false; }
+
+    // Bad byte order
+    std::vector<std::uint8_t> bad_order = {'X', 'X', 42, 0, 0, 0, 0, 0};
+    if (Structure::read(bad_order).has_value()) { std::cerr << "should reject bad byte order" << std::endl; return false; }
+
+    return true;
+}
+
+bool test_tiff_big_endian() {
+    using namespace ppp::core::tiff;
+
+    // Build a big-endian TIFF with just ImageWidth=512 (SHORT)
+    std::vector<std::uint8_t> buf(8 + 2 + 12 + 4, 0);
+    auto put16be = [&](std::size_t off, std::uint16_t v) {
+        buf[off] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+        buf[off + 1] = static_cast<std::uint8_t>(v & 0xFF);
+    };
+    auto put32be = [&](std::size_t off, std::uint32_t v) {
+        buf[off] = static_cast<std::uint8_t>((v >> 24) & 0xFF);
+        buf[off + 1] = static_cast<std::uint8_t>((v >> 16) & 0xFF);
+        buf[off + 2] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+        buf[off + 3] = static_cast<std::uint8_t>(v & 0xFF);
+    };
+
+    buf[0] = 'M'; buf[1] = 'M';
+    put16be(2, 42);
+    put32be(4, 8);
+
+    put16be(8, 1);  // 1 entry
+    put16be(10, 256);  // ImageWidth
+    put16be(12, 3);    // SHORT
+    put32be(14, 1);    // count = 1
+    put16be(18, 512);  // value = 512 (in first 2 bytes of value field for BE SHORT)
+    put32be(22, 0);    // next IFD = 0
+
+    auto tiff = Structure::read(buf);
+    if (!tiff) { std::cerr << "failed to parse big-endian TIFF" << std::endl; return false; }
+    if (tiff->byte_order() != ByteOrder::BigEndian) { std::cerr << "expected big-endian" << std::endl; return false; }
+
+    auto w = tiff->image_width();
+    if (!w || *w != 512) { std::cerr << "BE ImageWidth mismatch: got " << (w ? *w : -1) << std::endl; return false; }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -2348,6 +2559,10 @@ int main() {
         {"processing_profile_json_round_trip", test_processing_profile_json_round_trip},
         {"processing_profile_file_round_trip", test_processing_profile_file_round_trip},
         {"processing_profile_default_values", test_processing_profile_default_values},
+        {"tiff_parse_synthetic", test_tiff_parse_synthetic},
+        {"tiff_ifd_accessors", test_tiff_ifd_accessors},
+        {"tiff_invalid_data", test_tiff_invalid_data},
+        {"tiff_big_endian", test_tiff_big_endian},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);
