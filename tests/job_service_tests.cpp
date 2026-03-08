@@ -4045,6 +4045,229 @@ bool test_pipeline_with_resize() {
 }
 
 // ---------------------------------------------------------------------------
+// Histogram and auto-threshold tests
+// ---------------------------------------------------------------------------
+
+bool test_histogram_gray8() {
+    using namespace ppp::core;
+
+    // Uniform gray image — all pixels at value 128.
+    Image img(100, 100, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(128);
+
+    auto hist = ops::compute_histogram(img);
+    if (hist.total_pixels != 10000) {
+        std::cerr << "hist gray8: wrong total " << hist.total_pixels << std::endl;
+        return false;
+    }
+    if (hist.bins[128] != 10000) {
+        std::cerr << "hist gray8: bin[128]=" << hist.bins[128] << std::endl;
+        return false;
+    }
+    // All other bins should be zero.
+    for (int i = 0; i < 256; ++i) {
+        if (i != 128 && hist.bins[i] != 0) {
+            std::cerr << "hist gray8: bin[" << i << "]=" << hist.bins[i] << std::endl;
+            return false;
+        }
+    }
+
+    // Check statistics.
+    if (std::abs(hist.mean() - 128.0) > 0.01) {
+        std::cerr << "hist gray8: mean=" << hist.mean() << std::endl;
+        return false;
+    }
+    if (hist.median() != 128) {
+        std::cerr << "hist gray8: median=" << (int)hist.median() << std::endl;
+        return false;
+    }
+    if (hist.min_value() != 128 || hist.max_value() != 128) {
+        std::cerr << "hist gray8: min/max wrong" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_histogram_bimodal() {
+    using namespace ppp::core;
+
+    // Half black (0), half white (255).
+    Image img(100, 100, PixelFormat::Gray8, 300.0, 300.0);
+    for (int y = 0; y < 100; ++y) {
+        auto* row = img.row(y);
+        for (int x = 0; x < 100; ++x) {
+            row[x] = (y < 50) ? static_cast<std::uint8_t>(0) : static_cast<std::uint8_t>(255);
+        }
+    }
+
+    auto hist = ops::compute_histogram(img);
+    if (hist.bins[0] != 5000 || hist.bins[255] != 5000) {
+        std::cerr << "hist bimodal: bins[0]=" << hist.bins[0]
+                  << " bins[255]=" << hist.bins[255] << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_histogram_rgb24() {
+    using namespace ppp::core;
+
+    // Pure red image — luminance = 0.299*255 ≈ 76.
+    Image img(50, 50, PixelFormat::RGB24, 300.0, 300.0);
+    for (int y = 0; y < 50; ++y) {
+        auto* row = img.row(y);
+        for (int x = 0; x < 50; ++x) {
+            row[x * 3 + 0] = 255;  // R.
+            row[x * 3 + 1] = 0;    // G.
+            row[x * 3 + 2] = 0;    // B.
+        }
+    }
+
+    auto hist = ops::compute_histogram(img);
+    // Luminance ≈ 76.245 → bin 76.
+    auto lum = static_cast<int>(0.299 * 255 + 0.5);
+    if (hist.bins[lum] != 2500) {
+        std::cerr << "hist rgb24: expected bin[" << lum << "]=2500, got "
+                  << hist.bins[lum] << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_histogram_bw1() {
+    using namespace ppp::core;
+
+    Image img(80, 60, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);  // All white.
+    // Set some foreground pixels.
+    for (int x = 0; x < 40; ++x)
+        img.set_bw_pixel(x, 0, 1);
+
+    auto hist = ops::compute_histogram(img);
+    // 40 foreground (bin 0), rest background (bin 255).
+    if (hist.bins[0] != 40) {
+        std::cerr << "hist bw1: bins[0]=" << hist.bins[0] << " (expected 40)" << std::endl;
+        return false;
+    }
+    if (hist.bins[255] != 80 * 60 - 40) {
+        std::cerr << "hist bw1: bins[255]=" << hist.bins[255] << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_otsu_threshold() {
+    using namespace ppp::core;
+
+    // Create a bimodal histogram with peaks at 50 and 200.
+    ops::Histogram hist;
+    for (int i = 40; i <= 60; ++i) hist.bins[i] = 100;
+    for (int i = 190; i <= 210; ++i) hist.bins[i] = 100;
+    hist.total_pixels = 2100 + 2100;
+    // Correct total.
+    hist.total_pixels = 0;
+    for (int i = 0; i < 256; ++i) hist.total_pixels += hist.bins[i];
+
+    auto t = ops::otsu_threshold(hist);
+    // Otsu threshold should be between the two peaks.
+    if (t < 60 || t > 190) {
+        std::cerr << "otsu: threshold=" << (int)t << " (expected 60..190)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_binarize_gray8() {
+    using namespace ppp::core;
+
+    Image img(40, 30, PixelFormat::Gray8, 300.0, 300.0);
+    // Left half dark (50), right half light (200).
+    for (int y = 0; y < 30; ++y) {
+        auto* row = img.row(y);
+        for (int x = 0; x < 40; ++x) {
+            row[x] = (x < 20) ? static_cast<std::uint8_t>(50) : static_cast<std::uint8_t>(200);
+        }
+    }
+
+    auto bw = ops::binarize(img, 128);
+    if (bw.format() != PixelFormat::BW1) {
+        std::cerr << "binarize: wrong format" << std::endl;
+        return false;
+    }
+    if (bw.width() != 40 || bw.height() != 30) {
+        std::cerr << "binarize: wrong size" << std::endl;
+        return false;
+    }
+
+    // Left half should be foreground (1), right half background (0).
+    for (int y = 0; y < 30; ++y) {
+        for (int x = 0; x < 40; ++x) {
+            int expected = (x < 20) ? 1 : 0;
+            if (bw.get_bw_pixel(x, y) != expected) {
+                std::cerr << "binarize: pixel (" << x << "," << y << ") = "
+                          << bw.get_bw_pixel(x, y) << " expected " << expected << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool test_binarize_otsu() {
+    using namespace ppp::core;
+
+    // Bimodal image: top half dark, bottom half light.
+    Image img(60, 40, PixelFormat::Gray8, 300.0, 300.0);
+    for (int y = 0; y < 40; ++y) {
+        auto* row = img.row(y);
+        for (int x = 0; x < 60; ++x) {
+            row[x] = (y < 20) ? static_cast<std::uint8_t>(30) : static_cast<std::uint8_t>(220);
+        }
+    }
+
+    auto bw = ops::binarize_otsu(img);
+    if (bw.format() != PixelFormat::BW1) {
+        std::cerr << "binarize_otsu: wrong format" << std::endl;
+        return false;
+    }
+
+    // Top half should be foreground, bottom background.
+    if (bw.get_bw_pixel(30, 5) != 1) {
+        std::cerr << "binarize_otsu: dark region should be foreground" << std::endl;
+        return false;
+    }
+    if (bw.get_bw_pixel(30, 35) != 0) {
+        std::cerr << "binarize_otsu: light region should be background" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_binarize_already_bw1() {
+    using namespace ppp::core;
+
+    Image img(50, 40, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    img.set_bw_pixel(10, 10, 1);
+
+    auto bw = ops::binarize(img, 128);
+    if (bw.format() != PixelFormat::BW1) return false;
+    if (bw.get_bw_pixel(10, 10) != 1) return false;
+
+    auto bw2 = ops::binarize_otsu(img);
+    if (bw2.get_bw_pixel(10, 10) != 1) return false;
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Blank page detection tests
 // ---------------------------------------------------------------------------
 
@@ -4764,6 +4987,14 @@ int main() {
         {"resize_no_enlarge", test_resize_no_enlarge},
         {"resize_alignment", test_resize_alignment},
         {"pipeline_with_resize", test_pipeline_with_resize},
+        {"histogram_gray8", test_histogram_gray8},
+        {"histogram_bimodal", test_histogram_bimodal},
+        {"histogram_rgb24", test_histogram_rgb24},
+        {"histogram_bw1", test_histogram_bw1},
+        {"otsu_threshold", test_otsu_threshold},
+        {"binarize_gray8", test_binarize_gray8},
+        {"binarize_otsu", test_binarize_otsu},
+        {"binarize_already_bw1", test_binarize_already_bw1},
         {"blank_page_empty_image", test_blank_page_empty_image},
         {"blank_page_white_image", test_blank_page_white_image},
         {"blank_page_content_image", test_blank_page_content_image},

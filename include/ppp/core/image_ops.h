@@ -276,4 +276,70 @@ struct DeskewResult {
 [[nodiscard]] DeskewResult apply_deskew(const Image& image,
                                         const DeskewConfig& config);
 
+// ---------------------------------------------------------------------------
+// Histogram and auto-threshold
+// ---------------------------------------------------------------------------
+
+/// 256-bin histogram for grayscale images.
+struct Histogram {
+    std::array<std::int32_t, 256> bins{};   ///< Pixel count per intensity level.
+    std::int32_t total_pixels{0};           ///< Sum of all bins.
+
+    /// Normalized frequency for a given bin (0.0–1.0).
+    [[nodiscard]] double frequency(int bin) const noexcept {
+        if (total_pixels == 0 || bin < 0 || bin > 255) return 0.0;
+        return static_cast<double>(bins[bin]) / static_cast<double>(total_pixels);
+    }
+
+    /// Mean intensity (0.0–255.0).
+    [[nodiscard]] double mean() const noexcept;
+
+    /// Median intensity.
+    [[nodiscard]] std::uint8_t median() const noexcept;
+
+    /// Minimum non-zero bin.
+    [[nodiscard]] std::uint8_t min_value() const noexcept;
+
+    /// Maximum non-zero bin.
+    [[nodiscard]] std::uint8_t max_value() const noexcept;
+};
+
+/// Compute a grayscale histogram from an image.
+///
+/// For Gray8, uses pixel values directly.  For RGB24/RGBA32, converts to
+/// luminance (0.299R + 0.587G + 0.114B).  For BW1, produces a two-peak
+/// histogram at bins 0 and 255.
+///
+/// @param image  Source image.
+/// @return Histogram with 256 bins.
+[[nodiscard]] Histogram compute_histogram(const Image& image);
+
+/// Compute the optimal binarization threshold using Otsu's method.
+///
+/// Finds the threshold that minimizes intra-class variance (equivalently
+/// maximizes inter-class variance) between foreground and background.
+///
+/// @param hist  Grayscale histogram.
+/// @return Optimal threshold (0–255).
+[[nodiscard]] std::uint8_t otsu_threshold(const Histogram& hist);
+
+/// Binarize a grayscale image using a given threshold.
+///
+/// Pixels with intensity <= threshold become foreground (1), others
+/// become background (0).  Returns a BW1 image.
+///
+/// @param image      Source image (Gray8, RGB24, or RGBA32).
+/// @param threshold  Binarization threshold (0–255).
+/// @return BW1 image.
+[[nodiscard]] Image binarize(const Image& image, std::uint8_t threshold);
+
+/// Binarize using Otsu's automatic threshold.
+///
+/// Convenience function that computes the histogram, finds the Otsu
+/// threshold, and binarizes in one call.
+///
+/// @param image  Source image.
+/// @return BW1 image.
+[[nodiscard]] Image binarize_otsu(const Image& image);
+
 } // namespace ppp::core::ops

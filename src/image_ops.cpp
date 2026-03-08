@@ -935,4 +935,209 @@ DeskewResult apply_deskew(const Image& image, const DeskewConfig& config) {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Histogram
+// ---------------------------------------------------------------------------
+
+double Histogram::mean() const noexcept {
+    if (total_pixels == 0) return 0.0;
+    double sum = 0;
+    for (int i = 0; i < 256; ++i) {
+        sum += static_cast<double>(i) * bins[i];
+    }
+    return sum / total_pixels;
+}
+
+std::uint8_t Histogram::median() const noexcept {
+    if (total_pixels == 0) return 0;
+    std::int32_t half = total_pixels / 2;
+    std::int32_t cumulative = 0;
+    for (int i = 0; i < 256; ++i) {
+        cumulative += bins[i];
+        if (cumulative > half) return static_cast<std::uint8_t>(i);
+    }
+    return 255;
+}
+
+std::uint8_t Histogram::min_value() const noexcept {
+    for (int i = 0; i < 256; ++i) {
+        if (bins[i] > 0) return static_cast<std::uint8_t>(i);
+    }
+    return 0;
+}
+
+std::uint8_t Histogram::max_value() const noexcept {
+    for (int i = 255; i >= 0; --i) {
+        if (bins[i] > 0) return static_cast<std::uint8_t>(i);
+    }
+    return 0;
+}
+
+Histogram compute_histogram(const Image& image) {
+    Histogram hist;
+    if (image.empty()) return hist;
+
+    auto w = image.width();
+    auto h = image.height();
+
+    switch (image.format()) {
+        case PixelFormat::BW1:
+            for (std::int32_t y = 0; y < h; ++y) {
+                for (std::int32_t x = 0; x < w; ++x) {
+                    if (image.get_bw_pixel(x, y)) {
+                        ++hist.bins[0];    // Foreground → black.
+                    } else {
+                        ++hist.bins[255];  // Background → white.
+                    }
+                }
+            }
+            break;
+
+        case PixelFormat::Gray8:
+            for (std::int32_t y = 0; y < h; ++y) {
+                const auto* row = image.row(y);
+                for (std::int32_t x = 0; x < w; ++x) {
+                    ++hist.bins[row[x]];
+                }
+            }
+            break;
+
+        case PixelFormat::RGB24:
+            for (std::int32_t y = 0; y < h; ++y) {
+                const auto* row = image.row(y);
+                for (std::int32_t x = 0; x < w; ++x) {
+                    auto r = row[x * 3 + 0];
+                    auto g = row[x * 3 + 1];
+                    auto b = row[x * 3 + 2];
+                    auto lum = static_cast<std::uint8_t>(
+                        0.299 * r + 0.587 * g + 0.114 * b + 0.5);
+                    ++hist.bins[lum];
+                }
+            }
+            break;
+
+        case PixelFormat::RGBA32:
+            for (std::int32_t y = 0; y < h; ++y) {
+                const auto* row = image.row(y);
+                for (std::int32_t x = 0; x < w; ++x) {
+                    auto r = row[x * 4 + 0];
+                    auto g = row[x * 4 + 1];
+                    auto b = row[x * 4 + 2];
+                    auto lum = static_cast<std::uint8_t>(
+                        0.299 * r + 0.587 * g + 0.114 * b + 0.5);
+                    ++hist.bins[lum];
+                }
+            }
+            break;
+    }
+
+    hist.total_pixels = w * h;
+    return hist;
+}
+
+// ---------------------------------------------------------------------------
+// Otsu's method
+// ---------------------------------------------------------------------------
+
+std::uint8_t otsu_threshold(const Histogram& hist) {
+    if (hist.total_pixels == 0) return 128;
+
+    double total = static_cast<double>(hist.total_pixels);
+
+    // Compute total mean.
+    double sum_total = 0;
+    for (int i = 0; i < 256; ++i) {
+        sum_total += static_cast<double>(i) * hist.bins[i];
+    }
+
+    double sum_bg = 0;
+    double weight_bg = 0;
+    double max_variance = 0;
+    int best_threshold = 0;
+
+    for (int t = 0; t < 256; ++t) {
+        weight_bg += hist.bins[t];
+        if (weight_bg == 0) continue;
+
+        double weight_fg = total - weight_bg;
+        if (weight_fg == 0) break;
+
+        sum_bg += static_cast<double>(t) * hist.bins[t];
+
+        double mean_bg = sum_bg / weight_bg;
+        double mean_fg = (sum_total - sum_bg) / weight_fg;
+
+        double diff = mean_bg - mean_fg;
+        double variance = weight_bg * weight_fg * diff * diff;
+
+        if (variance > max_variance) {
+            max_variance = variance;
+            best_threshold = t;
+        }
+    }
+
+    return static_cast<std::uint8_t>(best_threshold);
+}
+
+// ---------------------------------------------------------------------------
+// Binarize
+// ---------------------------------------------------------------------------
+
+Image binarize(const Image& image, std::uint8_t threshold) {
+    if (image.empty()) return {};
+    if (image.format() == PixelFormat::BW1) return image;
+
+    auto w = image.width();
+    auto h = image.height();
+    Image result(w, h, PixelFormat::BW1, image.dpi_x(), image.dpi_y());
+    result.fill(0);  // White background.
+
+    for (std::int32_t y = 0; y < h; ++y) {
+        const auto* src = image.row(y);
+
+        for (std::int32_t x = 0; x < w; ++x) {
+            std::uint8_t intensity = 255;
+
+            switch (image.format()) {
+                case PixelFormat::Gray8:
+                    intensity = src[x];
+                    break;
+                case PixelFormat::RGB24: {
+                    auto r = src[x * 3 + 0];
+                    auto g = src[x * 3 + 1];
+                    auto b = src[x * 3 + 2];
+                    intensity = static_cast<std::uint8_t>(
+                        0.299 * r + 0.587 * g + 0.114 * b + 0.5);
+                    break;
+                }
+                case PixelFormat::RGBA32: {
+                    auto r = src[x * 4 + 0];
+                    auto g = src[x * 4 + 1];
+                    auto b = src[x * 4 + 2];
+                    intensity = static_cast<std::uint8_t>(
+                        0.299 * r + 0.587 * g + 0.114 * b + 0.5);
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (intensity <= threshold) {
+                result.set_bw_pixel(x, y, 1);  // Dark → foreground.
+            }
+        }
+    }
+
+    return result;
+}
+
+Image binarize_otsu(const Image& image) {
+    if (image.empty()) return {};
+    if (image.format() == PixelFormat::BW1) return image;
+
+    auto hist = compute_histogram(image);
+    auto threshold = otsu_threshold(hist);
+    return binarize(image, threshold);
+}
+
 } // namespace ppp::core::ops
