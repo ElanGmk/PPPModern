@@ -4895,6 +4895,183 @@ bool test_movement_limit_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch processing tests
+// ---------------------------------------------------------------------------
+
+bool test_batch_basic() {
+    using namespace ppp::core;
+
+    // Create 3 simple images.
+    std::vector<Image> images;
+    for (int i = 0; i < 3; ++i) {
+        Image img(100, 80, PixelFormat::BW1, 300.0, 300.0);
+        img.fill(0);
+        for (int x = 10; x < 90; ++x)
+            img.set_bw_pixel(x, 40, 1);
+        images.push_back(std::move(img));
+    }
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+
+    auto batch = run_batch(images, profile);
+
+    if (!batch.success) {
+        std::cerr << "batch basic: " << batch.error << std::endl;
+        return false;
+    }
+    if (batch.total != 3 || batch.succeeded != 3 || batch.failed != 0) {
+        std::cerr << "batch basic: total=" << batch.total
+                  << " succeeded=" << batch.succeeded
+                  << " failed=" << batch.failed << std::endl;
+        return false;
+    }
+    if (batch.pages.size() != 3) {
+        std::cerr << "batch basic: wrong page count" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_batch_blank_pages() {
+    using namespace ppp::core;
+
+    std::vector<Image> images;
+
+    // Page 0: content.
+    Image img0(100, 80, PixelFormat::BW1, 300.0, 300.0);
+    img0.fill(0);
+    for (int y = 20; y < 60; ++y)
+        for (int x = 20; x < 80; ++x)
+            img0.set_bw_pixel(x, y, 1);
+    images.push_back(std::move(img0));
+
+    // Page 1: blank.
+    Image img1(100, 80, PixelFormat::BW1, 300.0, 300.0);
+    img1.fill(0);
+    images.push_back(std::move(img1));
+
+    // Page 2: content.
+    Image img2(100, 80, PixelFormat::BW1, 300.0, 300.0);
+    img2.fill(0);
+    for (int x = 10; x < 90; ++x)
+        img2.set_bw_pixel(x, 40, 1);
+    images.push_back(std::move(img2));
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+    profile.blank_page.enabled = true;
+    profile.blank_page.threshold_percent = 0.5;
+
+    auto batch = run_batch(images, profile);
+
+    if (batch.blank != 1) {
+        std::cerr << "batch blank: expected 1 blank, got " << batch.blank << std::endl;
+        return false;
+    }
+
+    // collect_images should skip blank page.
+    auto collected = collect_images(batch, false);
+    if (collected.size() != 2) {
+        std::cerr << "batch blank: collect_images got " << collected.size()
+                  << " (expected 2)" << std::endl;
+        return false;
+    }
+
+    // collect_images with include_blank should get all 3.
+    auto all = collect_images(batch, true);
+    if (all.size() != 3) {
+        std::cerr << "batch blank: collect_images(all) got " << all.size()
+                  << " (expected 3)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_batch_progress_callback() {
+    using namespace ppp::core;
+
+    std::vector<Image> images;
+    for (int i = 0; i < 5; ++i) {
+        Image img(50, 50, PixelFormat::Gray8, 300.0, 300.0);
+        img.fill(128);
+        images.push_back(std::move(img));
+    }
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+
+    int callback_count = 0;
+    auto batch = run_batch(images, profile,
+        [&](std::size_t idx, std::size_t total, const ProcessingResult&) -> bool {
+            ++callback_count;
+            return true;  // Continue.
+        });
+
+    if (callback_count != 5) {
+        std::cerr << "batch progress: callback called " << callback_count
+                  << " times (expected 5)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_batch_cancel() {
+    using namespace ppp::core;
+
+    std::vector<Image> images;
+    for (int i = 0; i < 10; ++i) {
+        Image img(50, 50, PixelFormat::Gray8, 300.0, 300.0);
+        img.fill(128);
+        images.push_back(std::move(img));
+    }
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+
+    auto batch = run_batch(images, profile,
+        [](std::size_t idx, std::size_t, const ProcessingResult&) -> bool {
+            return idx < 3;  // Cancel after page 3.
+        });
+
+    if (batch.success) {
+        std::cerr << "batch cancel: should not be success" << std::endl;
+        return false;
+    }
+    // Should have processed pages 0,1,2,3 (cancel after idx=3).
+    if (batch.pages.size() != 4) {
+        std::cerr << "batch cancel: processed " << batch.pages.size()
+                  << " pages (expected 4)" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_batch_empty() {
+    using namespace ppp::core;
+
+    std::vector<Image> images;
+    ProcessingProfile profile;
+
+    auto batch = run_batch(images, profile);
+
+    if (batch.total != 0 || batch.succeeded != 0) {
+        std::cerr << "batch empty: unexpected counts" << std::endl;
+        return false;
+    }
+    if (!batch.pages.empty()) {
+        std::cerr << "batch empty: should have no pages" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Enum from_string round-trip tests
 // ---------------------------------------------------------------------------
 
@@ -5929,6 +6106,11 @@ int main() {
         {"movement_limit_negative", test_movement_limit_negative},
         {"movement_limit_disabled", test_movement_limit_disabled},
         {"movement_limit_pipeline", test_movement_limit_pipeline},
+        {"batch_basic", test_batch_basic},
+        {"batch_blank_pages", test_batch_blank_pages},
+        {"batch_progress_callback", test_batch_progress_callback},
+        {"batch_cancel", test_batch_cancel},
+        {"batch_empty", test_batch_empty},
         {"enum_from_string_roundtrips", test_enum_from_string_roundtrips},
         {"blank_page_config_json_roundtrip", test_blank_page_config_json_roundtrip},
         {"bmp_write_read_gray8", test_bmp_write_read_gray8},

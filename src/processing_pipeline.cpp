@@ -469,4 +469,63 @@ ProcessingResult run_step(const Image& image,
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Batch processing
+// ---------------------------------------------------------------------------
+
+BatchResult run_batch(const std::vector<Image>& images,
+                       const ProcessingProfile& profile,
+                       BatchProgressCallback progress) {
+    BatchResult batch;
+    batch.total = static_cast<std::int32_t>(images.size());
+    batch.pages.reserve(images.size());
+
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        auto result = run_pipeline(images[i], profile, i);
+
+        if (result.success) {
+            ++batch.succeeded;
+        } else {
+            ++batch.failed;
+            if (batch.error.empty()) {
+                batch.error = "page " + std::to_string(i) + ": " + result.error;
+            }
+            batch.success = false;
+        }
+
+        if (result.is_blank) {
+            ++batch.blank;
+        }
+
+        batch.pages.push_back(std::move(result));
+
+        // Invoke progress callback.
+        if (progress) {
+            if (!progress(i, images.size(), batch.pages.back())) {
+                // Cancelled by callback.
+                batch.error = "cancelled at page " + std::to_string(i);
+                batch.success = false;
+                break;
+            }
+        }
+    }
+
+    return batch;
+}
+
+std::vector<Image> collect_images(const BatchResult& batch,
+                                    bool include_blank) {
+    std::vector<Image> images;
+    images.reserve(batch.pages.size());
+
+    for (const auto& page : batch.pages) {
+        if (!page.success) continue;
+        if (!include_blank && page.is_blank) continue;
+        if (page.image.empty()) continue;
+        images.push_back(page.image);
+    }
+
+    return images;
+}
+
 } // namespace ppp::core

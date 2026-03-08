@@ -5,6 +5,7 @@
 #include "ppp/core/image_ops.h"
 #include "ppp/core/processing_config.h"
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -79,5 +80,53 @@ struct ProcessingResult {
     const ProcessingProfile& profile,
     const std::string& step_name,
     std::size_t page_index = 0);
+
+// ---------------------------------------------------------------------------
+// Batch processing
+// ---------------------------------------------------------------------------
+
+/// Result of processing a batch of images.
+struct BatchResult {
+    std::vector<ProcessingResult> pages;  ///< Per-page results.
+    std::int32_t total{0};                ///< Total pages submitted.
+    std::int32_t succeeded{0};            ///< Pages processed successfully.
+    std::int32_t failed{0};               ///< Pages that failed processing.
+    std::int32_t blank{0};                ///< Pages detected as blank.
+    bool success{true};                   ///< Overall success (all pages OK).
+    std::string error;                    ///< First error message, if any.
+};
+
+/// Progress callback for batch processing.
+/// Called after each page is processed with (page_index, total_pages, result).
+/// Return false to cancel remaining pages.
+using BatchProgressCallback = std::function<bool(
+    std::size_t page_index, std::size_t total, const ProcessingResult& result)>;
+
+/// Process a batch of images through the pipeline.
+///
+/// Each image is processed independently with the same profile.
+/// Page index is assigned sequentially (0, 1, 2, ...) for odd/even
+/// margin selection.
+///
+/// @param images    Vector of source images to process.
+/// @param profile   Processing profile applied to all pages.
+/// @param progress  Optional progress callback (may be null).
+/// @return Batch result with per-page results and summary stats.
+[[nodiscard]] BatchResult run_batch(
+    const std::vector<Image>& images,
+    const ProcessingProfile& profile,
+    BatchProgressCallback progress = nullptr);
+
+/// Extract the processed images from a batch result (non-blank pages only).
+///
+/// Convenience function that collects result images from successful,
+/// non-blank pages.
+///
+/// @param batch         Batch result to extract from.
+/// @param include_blank If true, include blank pages (default: false).
+/// @return Vector of processed images.
+[[nodiscard]] std::vector<Image> collect_images(
+    const BatchResult& batch,
+    bool include_blank = false);
 
 } // namespace ppp::core
