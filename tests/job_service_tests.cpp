@@ -3814,6 +3814,235 @@ bool test_tiff_multipage() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Resize / scaling tests
+// ---------------------------------------------------------------------------
+
+bool test_scale_nearest_gray8() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Create 4x4 with quadrant pattern.
+    Image img(4, 4, PixelFormat::Gray8, 300.0, 300.0);
+    for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) img.row(y)[x] = 0;
+    for (int y = 0; y < 2; ++y) for (int x = 2; x < 4; ++x) img.row(y)[x] = 85;
+    for (int y = 2; y < 4; ++y) for (int x = 0; x < 2; ++x) img.row(y)[x] = 170;
+    for (int y = 2; y < 4; ++y) for (int x = 2; x < 4; ++x) img.row(y)[x] = 255;
+
+    // Scale up 2x.
+    auto up = scale_nearest(img, 8, 8);
+    if (up.width() != 8 || up.height() != 8) return false;
+    if (up.row(0)[0] != 0) return false;
+    if (up.row(0)[4] != 85) return false;
+    if (up.row(4)[0] != 170) return false;
+    if (up.row(4)[4] != 255) return false;
+
+    // Scale down 2x.
+    auto down = scale_nearest(img, 2, 2);
+    if (down.width() != 2 || down.height() != 2) return false;
+
+    return true;
+}
+
+bool test_scale_bilinear_gray8() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Gradient: left=0, right=200.
+    Image img(4, 1, PixelFormat::Gray8, 300.0, 300.0);
+    img.row(0)[0] = 0;
+    img.row(0)[1] = 66;
+    img.row(0)[2] = 133;
+    img.row(0)[3] = 200;
+
+    auto scaled = scale_bilinear(img, 8, 1);
+    if (scaled.width() != 8) return false;
+    // Should have interpolated values between.
+    if (scaled.row(0)[0] != 0) return false;
+    if (scaled.row(0)[7] != 200) return false;
+    // Middle values should be smooth.
+    if (scaled.row(0)[3] < 50 || scaled.row(0)[3] > 150) return false;
+
+    return true;
+}
+
+bool test_scale_bw1() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    Image img(8, 8, PixelFormat::BW1, 300.0, 300.0);
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    // Scale up 2x.
+    auto up = scale_nearest(img, 16, 16);
+    if (up.width() != 16 || up.height() != 16) return false;
+    if (up.get_bw_pixel(0, 0) != 1) return false;
+    if (up.get_bw_pixel(7, 7) != 1) return false;
+    if (up.get_bw_pixel(8, 8) != 0) return false;
+
+    // Bilinear on BW1 should fall back to nearest.
+    auto bil = scale_bilinear(img, 16, 16);
+    if (bil.width() != 16) return false;
+
+    return true;
+}
+
+bool test_resize_basic() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // 100x80 image with 50x40 content block.
+    Image img(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0xFF);
+    for (int y = 10; y < 50; ++y)
+        for (int x = 20; x < 70; ++x)
+            img.row(y)[x] = 0;
+
+    geometry::Rect subimage{20, 10, 70, 50};
+
+    ResizeConfig config;
+    config.enabled = true;
+    config.source = ResizeFrom::Subimage;
+    config.canvas.preset = CanvasPreset::Custom;
+    config.canvas.width = {200.0, MeasurementUnit::Pixels};
+    config.canvas.height = {150.0, MeasurementUnit::Pixels};
+    config.canvas.orientation = Orientation::Landscape;
+    config.v_alignment = VAlignment::Center;
+    config.h_alignment = HAlignment::Center;
+
+    auto result = apply_resize(img, subimage, config);
+    if (result.image.empty()) {
+        std::cerr << "resize produced empty image" << std::endl;
+        // Debug: check canvas resolution.
+        auto canvas = ppp::core::ops::resolve_canvas(config.canvas, 300.0, 300.0, 100, 80);
+        std::cerr << "canvas: " << canvas.width << "x" << canvas.height << std::endl;
+        return false;
+    }
+    if (result.image.width() != 200 || result.image.height() != 150) {
+        std::cerr << "resize output: " << result.image.width() << "x" << result.image.height() << std::endl;
+        return false;
+    }
+
+    // Content should be centered (or at least within the canvas).
+    if (result.content_rect.empty()) return false;
+
+    return true;
+}
+
+bool test_resize_no_enlarge() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    // Small 20x20 image.
+    Image img(20, 20, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0x80);
+
+    geometry::Rect subimage{0, 0, 20, 20};
+
+    ResizeConfig config;
+    config.enabled = true;
+    config.source = ResizeFrom::FullPage;
+    config.canvas.preset = CanvasPreset::Custom;
+    config.canvas.width = {200.0, MeasurementUnit::Pixels};
+    config.canvas.height = {200.0, MeasurementUnit::Pixels};
+    config.allow_enlarge = false;
+    config.allow_shrink = true;
+    config.v_alignment = VAlignment::Top;
+    config.h_alignment = HAlignment::Center;
+
+    auto result = apply_resize(img, subimage, config);
+    if (result.image.empty()) return false;
+
+    // Content should NOT be enlarged — stays at 20x20.
+    if (result.content_rect.width() != 20 || result.content_rect.height() != 20) {
+        std::cerr << "content size: " << result.content_rect.width() << "x"
+                  << result.content_rect.height() << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_resize_alignment() {
+    using namespace ppp::core;
+    using namespace ppp::core::ops;
+
+    Image img(50, 50, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0x00);
+
+    geometry::Rect subimage{0, 0, 50, 50};
+
+    ResizeConfig config;
+    config.enabled = true;
+    config.source = ResizeFrom::FullPage;
+    config.canvas.preset = CanvasPreset::Custom;
+    config.canvas.width = {100.0, MeasurementUnit::Pixels};
+    config.canvas.height = {100.0, MeasurementUnit::Pixels};
+    config.allow_enlarge = false;
+
+    // Top alignment.
+    config.v_alignment = VAlignment::Top;
+    config.h_alignment = HAlignment::Center;
+    auto r = apply_resize(img, subimage, config);
+    if (r.content_rect.top != 0) return false;
+    if (r.content_rect.left != 25) return false;
+
+    // Bottom alignment.
+    config.v_alignment = VAlignment::Bottom;
+    r = apply_resize(img, subimage, config);
+    if (r.content_rect.top != 50) return false;
+
+    // Center.
+    config.v_alignment = VAlignment::Center;
+    r = apply_resize(img, subimage, config);
+    if (r.content_rect.top != 25) return false;
+
+    return true;
+}
+
+bool test_pipeline_with_resize() {
+    using namespace ppp::core;
+
+    // Image with content block.
+    Image img(200, 150, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0xFF);
+    for (int y = 20; y < 100; ++y)
+        for (int x = 30; x < 170; ++x)
+            img.row(y)[x] = 0;
+
+    ProcessingProfile profile;
+    profile.position_image = false;  // Skip main margin step.
+    profile.resize.enabled = true;
+    profile.resize.source = ResizeFrom::FullPage;
+    profile.resize.canvas.preset = CanvasPreset::Custom;
+    profile.resize.canvas.width = {100.0, MeasurementUnit::Pixels};
+    profile.resize.canvas.height = {75.0, MeasurementUnit::Pixels};
+    profile.resize.canvas.orientation = Orientation::Landscape;
+    profile.resize.v_alignment = VAlignment::Center;
+    profile.resize.h_alignment = HAlignment::Center;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) { std::cerr << "pipeline failed: " << result.error << std::endl; return false; }
+
+    // Should have been resized.
+    if (result.image.width() != 100 || result.image.height() != 75) {
+        std::cerr << "pipeline resize output: " << result.image.width()
+                  << "x" << result.image.height() << std::endl;
+        return false;
+    }
+
+    // Check resize step was applied.
+    bool resize_applied = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "resize" && s.applied) resize_applied = true;
+    }
+    if (!resize_applied) return false;
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -3898,6 +4127,13 @@ int main() {
         {"tiff_roundtrip_rgb24", test_tiff_roundtrip_rgb24},
         {"tiff_file_roundtrip", test_tiff_file_roundtrip},
         {"tiff_multipage", test_tiff_multipage},
+        {"scale_nearest_gray8", test_scale_nearest_gray8},
+        {"scale_bilinear_gray8", test_scale_bilinear_gray8},
+        {"scale_bw1", test_scale_bw1},
+        {"resize_basic", test_resize_basic},
+        {"resize_no_enlarge", test_resize_no_enlarge},
+        {"resize_alignment", test_resize_alignment},
+        {"pipeline_with_resize", test_pipeline_with_resize},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);

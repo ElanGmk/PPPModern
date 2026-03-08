@@ -247,9 +247,26 @@ ProcessingResult run_pipeline(const Image& image,
         img, result.subimage_bounds, profile, page_index,
         result.canvas, content_rect));
 
-    // 10. Resize (not yet implemented).
+    // 10. Resize.
     if (profile.resize.enabled) {
-        result.steps.push_back({"resize", false, "not yet implemented"});
+        ProcessingStep step{"resize", false, ""};
+        auto resize_result = ops::apply_resize(
+            img, result.subimage_bounds, profile.resize,
+            page_index, profile.odd_even_mode);
+
+        if (!resize_result.image.empty()) {
+            img = std::move(resize_result.image);
+            step.applied = true;
+
+            std::ostringstream oss;
+            oss << "resized to " << img.width() << "x" << img.height()
+                << ", content at (" << resize_result.content_rect.left
+                << "," << resize_result.content_rect.top << ")";
+            step.detail = oss.str();
+        } else {
+            step.detail = "resize produced empty result";
+        }
+        result.steps.push_back(step);
     }
 
     result.image = std::move(img);
@@ -307,6 +324,22 @@ ProcessingResult run_step(const Image& image,
         result.steps.push_back(step_margins(
             img, result.subimage_bounds, profile, page_index,
             result.canvas, content_rect));
+    } else if (step_name == "resize") {
+        ops::SubimageResult sub;
+        step_detect_subimage(img, profile.subimage, sub);
+        result.subimage_bounds = sub.bounds;
+        if (result.subimage_bounds.empty()) {
+            result.subimage_bounds = {0, 0, img.width(), img.height()};
+        }
+        auto resize_result = ops::apply_resize(
+            img, result.subimage_bounds, profile.resize,
+            page_index, profile.odd_even_mode);
+        if (!resize_result.image.empty()) {
+            img = std::move(resize_result.image);
+            result.steps.push_back({"resize", true, "resized"});
+        } else {
+            result.steps.push_back({"resize", false, "no resize applied"});
+        }
     } else {
         result.success = false;
         result.error = "unknown step: " + step_name;

@@ -154,4 +154,48 @@ struct CanvasDimensions {
     std::int32_t src_w,
     std::int32_t src_h);
 
+// ---------------------------------------------------------------------------
+// Image scaling
+// ---------------------------------------------------------------------------
+
+/// Scale an image to new dimensions using nearest-neighbor interpolation.
+[[nodiscard]] Image scale_nearest(const Image& image,
+                                  std::int32_t new_width,
+                                  std::int32_t new_height);
+
+/// Scale an image to new dimensions using bilinear interpolation.
+/// Only supports Gray8 and RGB24.  BW1 images are scaled with nearest-neighbor.
+[[nodiscard]] Image scale_bilinear(const Image& image,
+                                   std::int32_t new_width,
+                                   std::int32_t new_height);
+
+// ---------------------------------------------------------------------------
+// Resize operation — full resize with alignment
+// ---------------------------------------------------------------------------
+
+/// Result of a resize operation.
+struct ResizeResult {
+    Image image;                    ///< Resized output image.
+    geometry::Rect content_rect;    ///< Where content ended up in the output.
+};
+
+/// Apply the full resize operation as configured by ResizeConfig.
+///
+/// Determines the source region (subimage, full page, or custom), scales
+/// it to fit the resize canvas (respecting allow_shrink/allow_enlarge),
+/// and places it according to alignment settings.
+///
+/// @param source           Source image.
+/// @param subimage_bounds  Detected content bounds (used when source=Subimage).
+/// @param config           Resize configuration.
+/// @param page_index       0-based page index (for odd/even set selection).
+/// @param odd_even_mode    Whether odd/even page sets are active.
+/// @return Resize result with output image.
+[[nodiscard]] ResizeResult apply_resize(
+    const Image& source,
+    const geometry::Rect& subimage_bounds,
+    const ResizeConfig& config,
+    std::size_t page_index = 0,
+    bool odd_even_mode = false);
+
 } // namespace ppp::core::ops
