@@ -1,11 +1,13 @@
 // PPP Job Viewer — Win32 GUI for document image processing.
 //
-// Replicates the legacy VCL application workflow:
-//   1. Open image files (TIFF/BMP)
-//   2. Configure processing profile
-//   3. Process images through the pipeline
-//   4. View before/after results
-//   5. Save processed output (TIFF/BMP/PDF)
+// Tabbed UI matching the legacy ELAN PPP application:
+//   Tab 1: Job Setup    — file browser, selected files, batch parameters
+//   Tab 2: Page Setup   — canvas size, orientation, rotation, subimage
+//   Tab 3: Margin Setup — per-edge margins, alignment, verso/recto
+//   Tab 4: Cleanup      — despeckle, deskew, edge/hole cleanup
+//   Tab 5: Resize       — resize workflow with separate canvas/margins
+//
+// QC workflow: Select → Configure → Process → Good/Exception → Investigate → loop
 
 #include "ppp/core/bmp.h"
 #include "ppp/core/image.h"
@@ -25,6 +27,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -91,11 +94,151 @@ enum ControlId : UINT {
     IDM_IMAGE_DELETE_PAGE,
     // Help
     IDM_HELP_ABOUT,
-    // Controls
+
+    // --- Layout controls ---
     IDC_TOOLBAR = 2001,
     IDC_STATUSBAR,
     IDC_IMAGE_PANEL,
-    IDC_STEP_LOG,
+    IDC_MAIN_TAB,           // Main 5-tab control (left panel)
+
+    // --- Job Setup tab (Tab 1) ---
+    IDC_JS_LOOK_IN_COMBO = 2100,
+    IDC_JS_LOOK_IN_BROWSE,
+    IDC_JS_UP_DIR_BTN,
+    IDC_JS_LIST_VIEW_BTN,
+    IDC_JS_DETAIL_VIEW_BTN,
+    IDC_JS_FILE_LIST,       // ListView: files in current directory
+    IDC_JS_FILE_TYPE_COMBO,
+    IDC_JS_SUB_TAB,         // Sub-tab strip: Selected Files / Batch Params
+    IDC_JS_SELECTED_LIST,   // ListView: selected files
+    IDC_JS_ADD_BTN,
+    IDC_JS_REMOVE_BTN,
+    IDC_JS_CLEAR_BTN,
+    IDC_JS_SAVE_LIST_BTN,
+    IDC_JS_LOAD_LIST_BTN,
+    IDC_JS_PROCESS_BTN,
+    // Batch params sub-tab
+    IDC_JS_OUTDIR_CHECK,
+    IDC_JS_OUTDIR_COMBO,
+    IDC_JS_OUTDIR_BROWSE,
+    IDC_JS_NEWEXT_CHECK,
+    IDC_JS_NEWEXT_COMBO,
+    IDC_JS_CONFLICT_REPORT,
+    IDC_JS_CONFLICT_OVERWRITE,
+    IDC_JS_OUTPUT_TYPE_COMBO,
+    IDC_JS_PDF_CHECK,
+
+    // --- Page Setup tab (Tab 2) ---
+    IDC_PS_DETECT_CHECK = 2200,
+    IDC_PS_UNIT_PIXELS,
+    IDC_PS_UNIT_INCHES,
+    IDC_PS_UNIT_MM,
+    IDC_PS_DETECTED_W,
+    IDC_PS_DETECTED_H,
+    IDC_PS_DPI,
+    IDC_PS_SUBIMAGE_W,
+    IDC_PS_SUBIMAGE_H,
+    IDC_PS_KEEP_ORIGINAL,
+    IDC_PS_CANVAS_W,
+    IDC_PS_CANVAS_H,
+    IDC_PS_CANVAS_AUTODETECT,
+    IDC_PS_CANVAS_LETTER,
+    IDC_PS_CANVAS_LEGAL,
+    IDC_PS_CANVAS_TABLOID,
+    IDC_PS_CANVAS_A4,
+    IDC_PS_CANVAS_A3,
+    IDC_PS_CANVAS_CUSTOM,
+    IDC_PS_ORIENT_PORTRAIT,
+    IDC_PS_ORIENT_LANDSCAPE,
+    IDC_PS_TURN_CHECK,
+    IDC_PS_TURN_CW,
+    IDC_PS_TURN_CCW,
+    IDC_PS_TURN_180,
+    IDC_PS_KEEP_OUTSIDE,
+    IDC_PS_MAX_HMOV,
+    IDC_PS_MAX_VMOV,
+    IDC_PS_REPORT_MOV,
+
+    // --- Margin Setup tab (Tab 3) ---
+    IDC_MS_SIMPLE_RADIO = 2300,
+    IDC_MS_ODDEVEN_RADIO,
+    IDC_MS_TOP_EDIT,
+    IDC_MS_LEFT_EDIT,
+    IDC_MS_RIGHT_EDIT,
+    IDC_MS_BOTTOM_EDIT,
+    IDC_MS_TOP_SET,
+    IDC_MS_TOP_CHECK,
+    IDC_MS_LEFT_SET,
+    IDC_MS_LEFT_CHECK,
+    IDC_MS_RIGHT_SET,
+    IDC_MS_RIGHT_CHECK,
+    IDC_MS_BOTTOM_SET,
+    IDC_MS_BOTTOM_CHECK,
+    IDC_MS_CENTER_H,
+    IDC_MS_CENTER_V,
+    IDC_MS_KEEP_H,
+    IDC_MS_KEEP_V,
+    IDC_MS_TO_MARGIN_H,
+    IDC_MS_TO_MARGIN_V,
+    IDC_MS_MIRROR_BTN,
+    IDC_MS_VERSO_RECTO_TAB,
+
+    // --- Cleanup tab (Tab 4) ---
+    IDC_CL_DESPECKLE_NONE = 2400,
+    IDC_CL_DESPECKLE_SINGLE,
+    IDC_CL_DESPECKLE_OBJECTS,
+    IDC_CL_DESPECKLE_MIN,
+    IDC_CL_DESPECKLE_MAX,
+    IDC_CL_DESKEW_CHECK,
+    IDC_CL_DESKEW_INTERP,
+    IDC_CL_DESKEW_CHARPROTECT,
+    IDC_CL_DESKEW_ALG_COMBO,
+    IDC_CL_DESKEW_MIN,
+    IDC_CL_DESKEW_MAX,
+    IDC_CL_EDGE_CHECK,
+    IDC_CL_EDGE_BEFORE_DESKEW,
+    IDC_CL_EDGE_AFTER_DESKEW,
+    IDC_CL_EDGE_TOP,
+    IDC_CL_EDGE_LEFT,
+    IDC_CL_EDGE_RIGHT,
+    IDC_CL_EDGE_BOTTOM,
+    IDC_CL_HOLE_CHECK,
+    IDC_CL_HOLE_TOP,
+    IDC_CL_HOLE_LEFT,
+    IDC_CL_HOLE_RIGHT,
+    IDC_CL_HOLE_BOTTOM,
+    IDC_CL_REPORT_SUBIMAGE,
+    IDC_CL_REPORT_W,
+    IDC_CL_REPORT_H,
+    IDC_CL_REPORT_NOSKEW,
+
+    // --- Resize tab (Tab 5) ---
+    IDC_RS_ENABLE_CHECK = 2500,
+    IDC_RS_FROM_SUBIMAGE,
+    IDC_RS_FROM_FULLPAGE,
+    IDC_RS_FROM_CUSTOM,
+    IDC_RS_FROM_SMART,
+    IDC_RS_CANVAS_W,
+    IDC_RS_CANVAS_H,
+    IDC_RS_TOP_EDIT,
+    IDC_RS_LEFT_EDIT,
+    IDC_RS_RIGHT_EDIT,
+    IDC_RS_BOTTOM_EDIT,
+    IDC_RS_VALIGN_TOP,
+    IDC_RS_VALIGN_BOTTOM,
+    IDC_RS_VALIGN_CENTER,
+    IDC_RS_VALIGN_PROP,
+    IDC_RS_HALIGN_CENTER,
+    IDC_RS_HALIGN_PROP,
+    IDC_RS_ALLOW_SHRINK,
+    IDC_RS_ALLOW_INCREASE,
+    IDC_RS_ANTIALIAS,
+
+    // --- Exception List ---
+    IDC_EX_LIST = 2600,
+    IDC_EX_INVESTIGATE_BTN,
+    IDC_EX_REPROCESS_BTN,
+    IDC_EX_DELETE_BTN,
 };
 
 // ---------------------------------------------------------------------------
@@ -143,7 +286,15 @@ struct ImageEntry {
     Image original;
     std::optional<Image> processed;
     std::optional<ProcessingResult> result;
+    bool is_exception{false};
+    std::string exception_reason;
 };
+
+// Tab indices for the main tab control.
+enum TabIndex { kTabJobSetup = 0, kTabPageSetup, kTabMarginSetup, kTabCleanup, kTabResize };
+
+// Sub-tab indices for Job Setup bottom panel.
+enum JobSubTab { kJobSubSelected = 0, kJobSubBatchParams };
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -151,13 +302,45 @@ struct ImageEntry {
 
 struct AppState {
     HINSTANCE hinstance{};
+    HFONT hfont_ui{};       // Default UI font (Segoe UI 9pt)
+    HFONT hfont_mono{};     // Monospace font for log
 
-    // Window handles
+    // Window handles — main layout
     HWND hwnd_main{};
     HWND hwnd_toolbar{};
     HWND hwnd_statusbar{};
     HWND hwnd_image_panel{};
-    HWND hwnd_step_log{};
+    HWND hwnd_main_tab{};   // Left-side 5-tab control
+
+    // Tab page containers (one per tab, shown/hidden on tab change)
+    HWND hwnd_tab_pages[5]{};
+
+    // --- Job Setup (Tab 1) controls ---
+    HWND hwnd_js_look_in{};
+    HWND hwnd_js_browse{};
+    HWND hwnd_js_up_dir{};
+    HWND hwnd_js_list_view{};
+    HWND hwnd_js_detail_view{};
+    HWND hwnd_js_file_list{};
+    HWND hwnd_js_file_type{};
+    HWND hwnd_js_sub_tab{};
+    HWND hwnd_js_selected_list{};
+    HWND hwnd_js_btn_add{};
+    HWND hwnd_js_btn_remove{};
+    HWND hwnd_js_btn_clear{};
+    HWND hwnd_js_btn_save{};
+    HWND hwnd_js_btn_load{};
+    HWND hwnd_js_btn_process{};
+    // Batch params sub-panel
+    HWND hwnd_js_batch_panel{};
+    HWND hwnd_js_selected_panel{};
+    bool js_detail_view{true};  // File list view mode
+
+    // --- Page Setup (Tab 2) controls ---
+    // (will be populated when Tab 2 is built)
+
+    // --- Exception list (bottom of image panel) ---
+    HWND hwnd_exception_list{};
 
     // Image state
     std::vector<ImageEntry> entries;
@@ -176,9 +359,15 @@ struct AppState {
     // Processing
     ProcessingProfile profile;
 
-    // File state
+    // File state — Job Setup
+    fs::path browse_dir;     // Current "Look in" directory
     fs::path current_file;
     fs::path profile_path;
+    std::vector<fs::path> selected_files;  // Files selected for batch
+
+    // Active tab
+    int active_tab{kTabJobSetup};
+    int active_js_sub_tab{kJobSubSelected};
 };
 
 // ---------------------------------------------------------------------------
@@ -192,17 +381,31 @@ void create_menus(HWND hwnd);
 void create_toolbar(AppState& state);
 void create_statusbar(AppState& state);
 void create_image_panel(AppState& state);
-void create_step_log(AppState& state);
+void create_main_tabs(AppState& state);
+void create_tab_job_setup(AppState& state);
+void create_tab_page_setup(AppState& state);
+void create_tab_margin_setup(AppState& state);
+void create_tab_cleanup(AppState& state);
+void create_tab_resize(AppState& state);
+void switch_tab(AppState& state, int tab_index);
+void switch_js_sub_tab(AppState& state, int sub_index);
 void layout_children(AppState& state);
+void layout_tab_job_setup(AppState& state, RECT rc);
 void update_title(AppState& state);
 void update_statusbar(AppState& state);
 void update_display(AppState& state);
-void update_step_log(AppState& state);
 void rebuild_display_bitmap(AppState& state);
 void free_display_bitmap(AppState& state);
+void populate_file_list(AppState& state);
+void populate_selected_list(AppState& state);
+void update_exception_list(AppState& state);
+void handle_file_list_dblclick(AppState& state);
 
 void do_file_open(AppState& state);
 void do_file_save(AppState& state);
+void do_add_selected(AppState& state);
+void do_remove_selected(AppState& state);
+void do_clear_selected(AppState& state);
 void do_process_current(AppState& state);
 void do_process_all(AppState& state);
 void do_process_step(AppState& state, const std::string& step_name);
@@ -212,6 +415,32 @@ void do_profile_edit(AppState& state);
 void do_profile_reset(AppState& state);
 
 Image load_image_file(const fs::path& path, std::size_t page = 0);
+
+// Helper: set font on a control.
+void set_ui_font(HWND hwnd, HFONT font) {
+    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+}
+
+// Helper: create a static label.
+HWND create_label(HWND parent, HINSTANCE inst, HFONT font,
+                   const wchar_t* text, int x, int y, int w, int h) {
+    HWND hw = CreateWindowExW(0, L"STATIC", text,
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        x, y, w, h, parent, nullptr, inst, nullptr);
+    set_ui_font(hw, font);
+    return hw;
+}
+
+// Helper: create a push button.
+HWND create_button(HWND parent, HINSTANCE inst, HFONT font,
+                    const wchar_t* text, int x, int y, int w, int h, UINT id) {
+    HWND hw = CreateWindowExW(0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP,
+        x, y, w, h, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+    set_ui_font(hw, font);
+    return hw;
+}
 
 // ---------------------------------------------------------------------------
 // Image → HBITMAP conversion (RGB→BGR swap for GDI)
@@ -606,64 +835,607 @@ void create_image_panel(AppState& state) {
 }
 
 // ---------------------------------------------------------------------------
-// Step log panel (read-only edit control)
+// Main tab control (left panel with 5 tabs)
 // ---------------------------------------------------------------------------
 
-void create_step_log(AppState& state) {
-    state.hwnd_step_log = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-        ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-        0, 0, 100, 100, state.hwnd_main,
-        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_STEP_LOG)),
+void create_main_tabs(AppState& state) {
+    // Create the tab control.
+    state.hwnd_main_tab = CreateWindowExW(
+        0, WC_TABCONTROLW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS,
+        0, 0, 400, 600, state.hwnd_main,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_MAIN_TAB)),
         state.hinstance, nullptr);
+    set_ui_font(state.hwnd_main_tab, state.hfont_ui);
 
-    // Set monospace font.
-    HFONT font = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                              CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                              FIXED_PITCH | FF_MODERN, L"Consolas");
-    SendMessageW(state.hwnd_step_log, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(font), TRUE);
+    // Insert tabs.
+    const wchar_t* tab_names[] = {
+        L"Job Setup", L"Page Setup", L"Margin Setup", L"Cleanup", L"Resize"
+    };
+    for (int i = 0; i < 5; ++i) {
+        TCITEMW item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = const_cast<wchar_t*>(tab_names[i]);
+        SendMessageW(state.hwnd_main_tab, TCM_INSERTITEMW, i,
+                     reinterpret_cast<LPARAM>(&item));
+    }
+
+    // Create container panels for each tab (static windows as parents).
+    for (int i = 0; i < 5; ++i) {
+        state.hwnd_tab_pages[i] = CreateWindowExW(
+            0, L"STATIC", nullptr,
+            WS_CHILD | WS_CLIPCHILDREN | SS_OWNERDRAW,
+            0, 0, 100, 100, state.hwnd_main_tab,
+            nullptr, state.hinstance, nullptr);
+    }
+
+    // Build each tab's controls.
+    create_tab_job_setup(state);
+    create_tab_page_setup(state);
+    create_tab_margin_setup(state);
+    create_tab_cleanup(state);
+    create_tab_resize(state);
+
+    // Show first tab.
+    switch_tab(state, kTabJobSetup);
 }
 
-void update_step_log(AppState& state) {
-    if (state.current_index < 0 || state.entries.empty()) {
-        SetWindowTextW(state.hwnd_step_log, L"No image loaded.\r\n");
+void switch_tab(AppState& state, int tab_index) {
+    state.active_tab = tab_index;
+    for (int i = 0; i < 5; ++i) {
+        ShowWindow(state.hwnd_tab_pages[i], (i == tab_index) ? SW_SHOW : SW_HIDE);
+    }
+    // Sync the tab control selection.
+    SendMessageW(state.hwnd_main_tab, TCM_SETCURSEL, tab_index, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tab 1: Job Setup
+// ---------------------------------------------------------------------------
+
+void create_tab_job_setup(AppState& state) {
+    HWND parent = state.hwnd_tab_pages[kTabJobSetup];
+    HINSTANCE inst = state.hinstance;
+    HFONT font = state.hfont_ui;
+
+    // All positions are relative — layout_tab_job_setup() will resize dynamically.
+    // Initial creation uses placeholder positions.
+
+    // --- Row 1: "Look in:" label + path edit + browse + up-dir + list/detail buttons ---
+    create_label(parent, inst, font, L"Look in:", 4, 6, 50, 18);
+
+    state.hwnd_js_look_in = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        56, 4, 300, 23, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_LOOK_IN_COMBO)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_look_in, font);
+
+    state.hwnd_js_browse = create_button(parent, inst, font,
+        L"\x2026", 360, 4, 24, 23, IDC_JS_LOOK_IN_BROWSE);  // Ellipsis char
+
+    state.hwnd_js_up_dir = create_button(parent, inst, font,
+        L"\x2191", 388, 4, 24, 23, IDC_JS_UP_DIR_BTN);  // Up arrow
+
+    state.hwnd_js_list_view = CreateWindowExW(0, L"BUTTON", L"\x2630",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
+        416, 4, 24, 23, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_LIST_VIEW_BTN)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_list_view, font);
+
+    state.hwnd_js_detail_view = CreateWindowExW(0, L"BUTTON", L"\x2261",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
+        444, 4, 24, 23, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_DETAIL_VIEW_BTN)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_detail_view, font);
+
+    // --- Row 2: File browser ListView (detail mode with Name, Size, Date columns) ---
+    state.hwnd_js_file_list = CreateWindowExW(
+        WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | WS_VSCROLL,
+        4, 30, 460, 160, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_FILE_LIST)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_file_list, font);
+    ListView_SetExtendedListViewStyle(state.hwnd_js_file_list,
+        LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+    // Columns: Name, Size, Last Changed.
+    LVCOLUMNW col{};
+    col.mask = LVCF_TEXT | LVCF_WIDTH;
+    col.cx = 250;
+    col.pszText = const_cast<wchar_t*>(L"Name");
+    SendMessageW(state.hwnd_js_file_list, LVM_INSERTCOLUMNW, 0,
+                 reinterpret_cast<LPARAM>(&col));
+    col.cx = 80;
+    col.pszText = const_cast<wchar_t*>(L"Size");
+    col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+    col.fmt = LVCFMT_RIGHT;
+    SendMessageW(state.hwnd_js_file_list, LVM_INSERTCOLUMNW, 1,
+                 reinterpret_cast<LPARAM>(&col));
+    col.cx = 120;
+    col.pszText = const_cast<wchar_t*>(L"Last Changed");
+    col.fmt = LVCFMT_LEFT;
+    SendMessageW(state.hwnd_js_file_list, LVM_INSERTCOLUMNW, 2,
+                 reinterpret_cast<LPARAM>(&col));
+
+    // --- Row 3: File type filter ---
+    create_label(parent, inst, font, L"Files of type:", 4, 194, 80, 18);
+    state.hwnd_js_file_type = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        88, 192, 380, 200, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_FILE_TYPE_COMBO)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_file_type, font);
+    const wchar_t* filters[] = {
+        L"Image Files (*.tif;*.tiff;*.bmp)",
+        L"TIFF Files (*.tif;*.tiff)",
+        L"BMP Files (*.bmp)",
+        L"All Files (*.*)"
+    };
+    for (auto* f : filters)
+        SendMessageW(state.hwnd_js_file_type, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(f));
+    SendMessageW(state.hwnd_js_file_type, CB_SETCURSEL, 0, 0);
+
+    // --- Row 4: Sub-tab strip: Selected Files / Batch Parameters ---
+    state.hwnd_js_sub_tab = CreateWindowExW(
+        0, WC_TABCONTROLW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS | TCS_BOTTOM,
+        4, 220, 460, 280, parent,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_SUB_TAB)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_sub_tab, font);
+
+    TCITEMW ti{};
+    ti.mask = TCIF_TEXT;
+    ti.pszText = const_cast<wchar_t*>(L"Selected Files");
+    SendMessageW(state.hwnd_js_sub_tab, TCM_INSERTITEMW, 0,
+                 reinterpret_cast<LPARAM>(&ti));
+    ti.pszText = const_cast<wchar_t*>(L"Batch Parameters");
+    SendMessageW(state.hwnd_js_sub_tab, TCM_INSERTITEMW, 1,
+                 reinterpret_cast<LPARAM>(&ti));
+
+    // --- Selected files panel: buttons LEFT, list RIGHT (legacy layout) ---
+    state.hwnd_js_selected_panel = CreateWindowExW(
+        0, L"STATIC", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | SS_OWNERDRAW,
+        2, 4, 450, 250, state.hwnd_js_sub_tab,
+        nullptr, inst, nullptr);
+
+    // Buttons stacked vertically on the left (matching legacy: 79x24/25 buttons).
+    int bx = 4, btn_w = 79, btn_h = 25, btn_gap = 4;
+    state.hwnd_js_btn_add = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"&Add", bx, 4, btn_w, btn_h, IDC_JS_ADD_BTN);
+    state.hwnd_js_btn_save = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"&Save", bx, 4 + (btn_h + btn_gap), btn_w, btn_h, IDC_JS_SAVE_LIST_BTN);
+    state.hwnd_js_btn_load = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"&Load", bx, 4 + 2 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_LOAD_LIST_BTN);
+    state.hwnd_js_btn_clear = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"&Clear", bx, 4 + 3 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_CLEAR_BTN);
+    // Process button at bottom of button column.
+    state.hwnd_js_btn_process = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Process", bx, 4 + 5 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_PROCESS_BTN);
+    state.hwnd_js_btn_remove = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Re&move", bx, 4 + 4 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_REMOVE_BTN);
+
+    // Selected files ListView — to the right of the buttons.
+    int list_x = bx + btn_w + 8;
+    state.hwnd_js_selected_list = CreateWindowExW(
+        WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | WS_VSCROLL,
+        list_x, 4, 350, 220, state.hwnd_js_selected_panel,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_SELECTED_LIST)),
+        inst, nullptr);
+    set_ui_font(state.hwnd_js_selected_list, font);
+    ListView_SetExtendedListViewStyle(state.hwnd_js_selected_list,
+        LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+    LVCOLUMNW scol{};
+    scol.mask = LVCF_TEXT | LVCF_WIDTH;
+    scol.cx = 340;
+    scol.pszText = const_cast<wchar_t*>(L"File Name");
+    SendMessageW(state.hwnd_js_selected_list, LVM_INSERTCOLUMNW, 0,
+                 reinterpret_cast<LPARAM>(&scol));
+
+    // --- Batch parameters panel (child of sub-tab, initially hidden) ---
+    state.hwnd_js_batch_panel = CreateWindowExW(
+        0, L"STATIC", nullptr,
+        WS_CHILD | WS_CLIPCHILDREN | SS_OWNERDRAW,
+        2, 4, 450, 250, state.hwnd_js_sub_tab,
+        nullptr, inst, nullptr);
+
+    auto* bp = state.hwnd_js_batch_panel;
+    int by = 8;
+
+    CreateWindowExW(0, L"BUTTON", L"Save to different directory",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        8, by, 200, 18, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_OUTDIR_CHECK)),
+        inst, nullptr);
+    by += 24;
+
+    create_label(bp, inst, font, L"Output dir:", 24, by + 2, 65, 16);
+    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        100, by, 290, 23, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_OUTDIR_COMBO)),
+        inst, nullptr);
+    create_button(bp, inst, font, L"\x2026", 396, by, 24, 23, IDC_JS_OUTDIR_BROWSE);
+    by += 32;
+
+    CreateWindowExW(0, L"BUTTON", L"New raster file extension:",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        8, by, 180, 18, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_NEWEXT_CHECK)),
+        inst, nullptr);
+    auto hwnd_ext = CreateWindowExW(0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        200, by - 2, 80, 150, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_NEWEXT_COMBO)),
+        inst, nullptr);
+    set_ui_font(hwnd_ext, font);
+    for (auto* ext : {L".tif", L".bmp", L".png"})
+        SendMessageW(hwnd_ext, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(ext));
+    SendMessageW(hwnd_ext, CB_SETCURSEL, 0, 0);
+    by += 28;
+
+    create_label(bp, inst, font, L"If same filename already exists:", 8, by + 2, 190, 16);
+    by += 20;
+    CreateWindowExW(0, L"BUTTON", L"Report",
+        WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP,
+        200, by, 66, 18, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_CONFLICT_REPORT)),
+        inst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Overwrite",
+        WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+        280, by, 81, 18, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_CONFLICT_OVERWRITE)),
+        inst, nullptr);
+    CheckDlgButton(bp, IDC_JS_CONFLICT_REPORT, BST_CHECKED);
+    by += 28;
+
+    create_label(bp, inst, font, L"Raster output (grayscale, color):", 8, by + 2, 190, 16);
+    auto hwnd_out = CreateWindowExW(0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        200, by, 220, 150, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_OUTPUT_TYPE_COMBO)),
+        inst, nullptr);
+    set_ui_font(hwnd_out, font);
+    const wchar_t* outputs[] = {
+        L"TIFF Uncompressed (lossless)",
+        L"TIFF Packed Bits (lossless)",
+        L"PNG (lossless)",
+        L"JPEG (lossy)"
+    };
+    for (auto* o : outputs)
+        SendMessageW(hwnd_out, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(o));
+    SendMessageW(hwnd_out, CB_SETCURSEL, 0, 0);
+    by += 32;
+
+    CreateWindowExW(0, L"BUTTON", L"Generate PDF output",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        8, by, 180, 18, bp,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_JS_PDF_CHECK)),
+        inst, nullptr);
+
+    // Set fonts for all batch panel children.
+    EnumChildWindows(bp, [](HWND hw, LPARAM lp) -> BOOL {
+        set_ui_font(hw, reinterpret_cast<HFONT>(lp));
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(font));
+
+    // Default sub-tab: Selected Files.
+    switch_js_sub_tab(state, kJobSubSelected);
+
+    // Initialize browse dir.
+    if (state.browse_dir.empty()) {
+        wchar_t buf[MAX_PATH];
+        GetCurrentDirectoryW(MAX_PATH, buf);
+        state.browse_dir = buf;
+    }
+    SetWindowTextW(state.hwnd_js_look_in, state.browse_dir.wstring().c_str());
+}
+
+void switch_js_sub_tab(AppState& state, int sub_index) {
+    state.active_js_sub_tab = sub_index;
+    ShowWindow(state.hwnd_js_selected_panel,
+               sub_index == kJobSubSelected ? SW_SHOW : SW_HIDE);
+    ShowWindow(state.hwnd_js_batch_panel,
+               sub_index == kJobSubBatchParams ? SW_SHOW : SW_HIDE);
+    SendMessageW(state.hwnd_js_sub_tab, TCM_SETCURSEL, sub_index, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2: Page Setup (placeholder — will be populated)
+// ---------------------------------------------------------------------------
+
+void create_tab_page_setup(AppState& state) {
+    HWND parent = state.hwnd_tab_pages[kTabPageSetup];
+    create_label(parent, state.hinstance, state.hfont_ui,
+                 L"Page Setup controls (coming soon)", 10, 10, 300, 20);
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3: Margin Setup (placeholder)
+// ---------------------------------------------------------------------------
+
+void create_tab_margin_setup(AppState& state) {
+    HWND parent = state.hwnd_tab_pages[kTabMarginSetup];
+    create_label(parent, state.hinstance, state.hfont_ui,
+                 L"Margin Setup controls (coming soon)", 10, 10, 300, 20);
+}
+
+// ---------------------------------------------------------------------------
+// Tab 4: Cleanup (placeholder)
+// ---------------------------------------------------------------------------
+
+void create_tab_cleanup(AppState& state) {
+    HWND parent = state.hwnd_tab_pages[kTabCleanup];
+    create_label(parent, state.hinstance, state.hfont_ui,
+                 L"Cleanup controls (coming soon)", 10, 10, 300, 20);
+}
+
+// ---------------------------------------------------------------------------
+// Tab 5: Resize (placeholder)
+// ---------------------------------------------------------------------------
+
+void create_tab_resize(AppState& state) {
+    HWND parent = state.hwnd_tab_pages[kTabResize];
+    create_label(parent, state.hinstance, state.hfont_ui,
+                 L"Resize controls (coming soon)", 10, 10, 300, 20);
+}
+
+// ---------------------------------------------------------------------------
+// File list population (Job Setup Tab 1)
+// ---------------------------------------------------------------------------
+
+void populate_file_list(AppState& state) {
+    SendMessageW(state.hwnd_js_file_list, LVM_DELETEALLITEMS, 0, 0);
+
+    if (state.browse_dir.empty() || !fs::exists(state.browse_dir)) return;
+
+    // Determine filter from file type combo.
+    int filter = static_cast<int>(
+        SendMessageW(state.hwnd_js_file_type, CB_GETCURSEL, 0, 0));
+
+    auto matches = [&](const fs::path& p) -> bool {
+        auto ext = to_lower(p.extension().string());
+        switch (filter) {
+        case 0:  return ext == ".tif" || ext == ".tiff" || ext == ".bmp";
+        case 1:  return ext == ".tif" || ext == ".tiff";
+        case 2:  return ext == ".bmp";
+        default: return true;
+        }
+    };
+
+    // First add subdirectories (for navigation).
+    std::error_code ec;
+    int idx = 0;
+    for (auto& entry : fs::directory_iterator(state.browse_dir, ec)) {
+        if (!entry.is_directory()) continue;
+        auto name = L"[" + entry.path().filename().wstring() + L"]";
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = idx;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        SendMessageW(state.hwnd_js_file_list, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+
+        // Type column.
+        LVITEMW sub{};
+        sub.iItem = idx;
+        sub.iSubItem = 1;
+        sub.mask = LVIF_TEXT;
+        sub.pszText = const_cast<wchar_t*>(L"<DIR>");
+        SendMessageW(state.hwnd_js_file_list, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&sub));
+        ++idx;
+    }
+
+    // Then add matching files.
+    for (auto& entry : fs::directory_iterator(state.browse_dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        if (!matches(entry.path())) continue;
+
+        auto name = entry.path().filename().wstring();
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = idx;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        SendMessageW(state.hwnd_js_file_list, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+
+        // Size column.
+        auto size = entry.file_size(ec);
+        std::wostringstream ss;
+        if (size >= 1024 * 1024)
+            ss << (size / (1024 * 1024)) << L" MB";
+        else if (size >= 1024)
+            ss << (size / 1024) << L" KB";
+        else
+            ss << size << L" B";
+        auto size_str = ss.str();
+        LVITEMW sub{};
+        sub.iItem = idx;
+        sub.iSubItem = 1;
+        sub.mask = LVIF_TEXT;
+        sub.pszText = const_cast<wchar_t*>(size_str.c_str());
+        SendMessageW(state.hwnd_js_file_list, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&sub));
+
+        // Last changed column.
+        auto lwt = entry.last_write_time(ec);
+        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            lwt - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+        auto time_t = std::chrono::system_clock::to_time_t(sctp);
+        struct tm tm_buf {};
+        localtime_s(&tm_buf, &time_t);
+        wchar_t date_buf[64];
+        wcsftime(date_buf, 64, L"%Y-%m-%d %H:%M", &tm_buf);
+        sub.iSubItem = 2;
+        sub.pszText = date_buf;
+        SendMessageW(state.hwnd_js_file_list, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&sub));
+        ++idx;
+    }
+
+    // Update Look-in path display.
+    SetWindowTextW(state.hwnd_js_look_in, state.browse_dir.wstring().c_str());
+}
+
+// Navigate into a directory or open a file on double-click in the file browser.
+void handle_file_list_dblclick(AppState& state) {
+    int sel = ListView_GetNextItem(state.hwnd_js_file_list, -1, LVNI_SELECTED);
+    if (sel < 0) return;
+
+    wchar_t buf[MAX_PATH];
+    LVITEMW item{};
+    item.mask = LVIF_TEXT;
+    item.iItem = sel;
+    item.iSubItem = 0;
+    item.pszText = buf;
+    item.cchTextMax = MAX_PATH;
+    SendMessageW(state.hwnd_js_file_list, LVM_GETITEMTEXTW, sel,
+                 reinterpret_cast<LPARAM>(&item));
+
+    std::wstring name(buf);
+
+    // Check if it's a directory entry (wrapped in []).
+    if (name.size() > 2 && name.front() == L'[' && name.back() == L']') {
+        auto dir_name = name.substr(1, name.size() - 2);
+        state.browse_dir = state.browse_dir / dir_name;
+        populate_file_list(state);
         return;
     }
 
-    const auto& entry = state.entries[state.current_index];
-    std::wostringstream oss;
+    // It's a file — load into the image viewer for preview.
+    auto path = state.browse_dir / name;
+    auto ext = to_lower(path.extension().string());
 
-    oss << L"--- Image Info ---\r\n";
-    oss << L"File: " << entry.source_path.filename().wstring() << L"\r\n";
-    oss << L"Original: " << entry.original.width() << L"x"
-        << entry.original.height() << L"\r\n";
-    oss << L"DPI: " << static_cast<int>(entry.original.dpi_x()) << L"x"
-        << static_cast<int>(entry.original.dpi_y()) << L"\r\n\r\n";
+    state.entries.clear();
+    state.current_index = -1;
+    state.showing_processed = false;
+    state.current_file = path;
 
-    if (entry.result) {
-        oss << L"--- Processing Steps ---\r\n";
-        for (const auto& step : entry.result->steps) {
-            oss << (step.applied ? L"[+] " : L"[-] ");
-            oss << widen(step.name) << L": " << widen(step.detail) << L"\r\n";
-        }
-
-        if (entry.result->is_blank) {
-            oss << L"\r\nResult: BLANK PAGE\r\n";
-        }
-
-        if (entry.processed) {
-            oss << L"\r\nOutput: " << entry.processed->width() << L"x"
-                << entry.processed->height() << L"\r\n";
-        }
-    } else {
-        oss << L"Not yet processed.\r\n";
-        oss << L"Press F5 or Process > Process Current.\r\n";
+    std::size_t pages = 1;
+    if (ext == ".tif" || ext == ".tiff") {
+        pages = count_tiff_pages(path);
+        if (pages == 0) pages = 1;
     }
 
-    SetWindowTextW(state.hwnd_step_log, oss.str().c_str());
+    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    for (std::size_t p = 0; p < pages; ++p) {
+        auto img = load_image_file(path, p);
+        if (img.empty()) break;
+        ImageEntry entry;
+        entry.source_path = path;
+        entry.page_index = p;
+        entry.original = std::move(img);
+        state.entries.push_back(std::move(entry));
+    }
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+
+    if (!state.entries.empty()) {
+        state.current_index = 0;
+        state.fit_mode = true;
+        update_display(state);
+    }
+}
+
+void populate_selected_list(AppState& state) {
+    SendMessageW(state.hwnd_js_selected_list, LVM_DELETEALLITEMS, 0, 0);
+    for (int i = 0; i < static_cast<int>(state.selected_files.size()); ++i) {
+        auto name = state.selected_files[i].filename().wstring();
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = i;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        SendMessageW(state.hwnd_js_selected_list, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+    }
+}
+
+void do_add_selected(AppState& state) {
+    int count = ListView_GetItemCount(state.hwnd_js_file_list);
+    for (int i = 0; i < count; ++i) {
+        if (ListView_GetItemState(state.hwnd_js_file_list, i, LVIS_SELECTED) & LVIS_SELECTED) {
+            wchar_t buf[MAX_PATH];
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = i;
+            item.iSubItem = 0;
+            item.pszText = buf;
+            item.cchTextMax = MAX_PATH;
+            SendMessageW(state.hwnd_js_file_list, LVM_GETITEMTEXTW, i,
+                         reinterpret_cast<LPARAM>(&item));
+            auto path = state.browse_dir / buf;
+            // Avoid duplicates.
+            bool found = false;
+            for (auto& f : state.selected_files)
+                if (f == path) { found = true; break; }
+            if (!found) state.selected_files.push_back(path);
+        }
+    }
+    populate_selected_list(state);
+}
+
+void do_remove_selected(AppState& state) {
+    // Remove selected items from selected_files (in reverse order).
+    std::vector<int> to_remove;
+    int count = ListView_GetItemCount(state.hwnd_js_selected_list);
+    for (int i = 0; i < count; ++i) {
+        if (ListView_GetItemState(state.hwnd_js_selected_list, i, LVIS_SELECTED) & LVIS_SELECTED)
+            to_remove.push_back(i);
+    }
+    for (auto it = to_remove.rbegin(); it != to_remove.rend(); ++it) {
+        if (*it < static_cast<int>(state.selected_files.size()))
+            state.selected_files.erase(state.selected_files.begin() + *it);
+    }
+    populate_selected_list(state);
+}
+
+void do_clear_selected(AppState& state) {
+    state.selected_files.clear();
+    populate_selected_list(state);
+}
+
+// ---------------------------------------------------------------------------
+// Exception list
+// ---------------------------------------------------------------------------
+
+void update_exception_list(AppState& state) {
+    if (!state.hwnd_exception_list) return;
+    SendMessageW(state.hwnd_exception_list, LVM_DELETEALLITEMS, 0, 0);
+    int idx = 0;
+    for (int i = 0; i < static_cast<int>(state.entries.size()); ++i) {
+        auto& e = state.entries[i];
+        if (!e.is_exception) continue;
+        auto name = e.source_path.filename().wstring();
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = idx;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        item.lParam = i;  // Index into entries.
+        SendMessageW(state.hwnd_exception_list, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+
+        auto reason = widen(e.exception_reason);
+        item.iSubItem = 1;
+        item.mask = LVIF_TEXT;
+        item.pszText = const_cast<wchar_t*>(reason.c_str());
+        SendMessageW(state.hwnd_exception_list, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&item));
+        ++idx;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -691,15 +1463,137 @@ void layout_children(AppState& state) {
     int statusbar_h = sb_rect.bottom - sb_rect.top;
 
     int avail_h = client_h - toolbar_h - statusbar_h;
-    int log_width = 280;
-    int image_width = client_w - log_width;
-    if (image_width < 200) {
-        image_width = client_w;
-        log_width = 0;
+
+    // Layout: left panel (tabs) | right panel (image viewer)
+    int tab_width = 350;
+    if (client_w < 700) tab_width = client_w / 2;
+    int image_width = client_w - tab_width;
+
+    // Tab control fills the left side.
+    MoveWindow(state.hwnd_main_tab, 0, toolbar_h, tab_width, avail_h, TRUE);
+
+    // Get the tab display area (inside the tab control, below the tab strip).
+    RECT tab_rc;
+    GetClientRect(state.hwnd_main_tab, &tab_rc);
+    SendMessageW(state.hwnd_main_tab, TCM_ADJUSTRECT, FALSE,
+                 reinterpret_cast<LPARAM>(&tab_rc));
+
+    int tab_content_x = tab_rc.left;
+    int tab_content_y = tab_rc.top;
+    int tab_content_w = tab_rc.right - tab_rc.left;
+    int tab_content_h = tab_rc.bottom - tab_rc.top;
+
+    // Position all tab pages in the content area.
+    for (int i = 0; i < 5; ++i) {
+        MoveWindow(state.hwnd_tab_pages[i],
+                   tab_content_x, tab_content_y,
+                   tab_content_w, tab_content_h, TRUE);
     }
 
-    MoveWindow(state.hwnd_image_panel, 0, toolbar_h, image_width, avail_h, TRUE);
-    MoveWindow(state.hwnd_step_log, image_width, toolbar_h, log_width, avail_h, TRUE);
+    // Layout Job Setup tab contents dynamically.
+    RECT js_rc = {0, 0, tab_content_w, tab_content_h};
+    layout_tab_job_setup(state, js_rc);
+
+    // Image panel fills the right side.
+    // If exception list exists, split vertically: image on top, exceptions on bottom.
+    int exception_h = 0;
+    if (state.hwnd_exception_list && IsWindowVisible(state.hwnd_exception_list))
+        exception_h = 140;
+
+    MoveWindow(state.hwnd_image_panel, tab_width, toolbar_h,
+               image_width, avail_h - exception_h, TRUE);
+
+    if (state.hwnd_exception_list) {
+        MoveWindow(state.hwnd_exception_list, tab_width,
+                   toolbar_h + avail_h - exception_h,
+                   image_width, exception_h, TRUE);
+    }
+}
+
+void layout_tab_job_setup(AppState& state, RECT rc) {
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w < 50 || h < 50) return;
+
+    int margin = 4;
+    int row_h = 23;
+    int y = margin;
+
+    // --- Row 1: Look-in bar ---
+    // "Look in:" label is at fixed position (not moved).
+    int lbl_w = 52;
+    int btn_size = 24;
+    int n_btns = 4;  // browse, up, list, detail
+    int btns_total = n_btns * (btn_size + 2);
+    int edit_w = w - lbl_w - btns_total - margin * 2 - 4;
+    if (edit_w < 60) edit_w = 60;
+
+    MoveWindow(state.hwnd_js_look_in, lbl_w + margin, y, edit_w, row_h, TRUE);
+    int bx = lbl_w + margin + edit_w + 4;
+    MoveWindow(state.hwnd_js_browse, bx, y, btn_size, row_h, TRUE);     bx += btn_size + 2;
+    MoveWindow(state.hwnd_js_up_dir, bx, y, btn_size, row_h, TRUE);     bx += btn_size + 2;
+    MoveWindow(state.hwnd_js_list_view, bx, y, btn_size, row_h, TRUE);  bx += btn_size + 2;
+    MoveWindow(state.hwnd_js_detail_view, bx, y, btn_size, row_h, TRUE);
+    y += row_h + 4;
+
+    // --- Row 2: File list (upper ~40% of remaining space) ---
+    int remaining = h - y - margin;
+    int file_list_h = remaining * 35 / 100;
+    if (file_list_h < 80) file_list_h = 80;
+    MoveWindow(state.hwnd_js_file_list, margin, y, w - margin * 2, file_list_h, TRUE);
+
+    // Resize columns proportionally.
+    int lw = w - margin * 2 - 24;  // Account for scrollbar.
+    ListView_SetColumnWidth(state.hwnd_js_file_list, 0, lw * 55 / 100);
+    ListView_SetColumnWidth(state.hwnd_js_file_list, 1, lw * 18 / 100);
+    ListView_SetColumnWidth(state.hwnd_js_file_list, 2, lw * 27 / 100);
+    y += file_list_h + 4;
+
+    // --- Row 3: File type filter ---
+    // "Files of type:" label at (4, y+2) — fixed position.
+    int ft_lbl_w = 84;
+    MoveWindow(state.hwnd_js_file_type, margin + ft_lbl_w, y,
+               w - margin * 2 - ft_lbl_w, row_h + 150, TRUE);  // +150 for dropdown
+    y += row_h + 4;
+
+    // --- Row 4: Sub-tab (selected files / batch params) takes the rest ---
+    int sub_h = h - y - margin;
+    if (sub_h < 60) sub_h = 60;
+    MoveWindow(state.hwnd_js_sub_tab, margin, y, w - margin * 2, sub_h, TRUE);
+
+    // Get the sub-tab content area.
+    RECT sub_rc;
+    GetClientRect(state.hwnd_js_sub_tab, &sub_rc);
+    SendMessageW(state.hwnd_js_sub_tab, TCM_ADJUSTRECT, FALSE,
+                 reinterpret_cast<LPARAM>(&sub_rc));
+    int sp_x = sub_rc.left;
+    int sp_y = sub_rc.top;
+    int sp_w = sub_rc.right - sub_rc.left;
+    int sp_h = sub_rc.bottom - sub_rc.top;
+
+    MoveWindow(state.hwnd_js_selected_panel, sp_x, sp_y, sp_w, sp_h, TRUE);
+    MoveWindow(state.hwnd_js_batch_panel, sp_x, sp_y, sp_w, sp_h, TRUE);
+
+    // --- Selected files panel layout: buttons LEFT, list RIGHT ---
+    int btn_w = 79;
+    int btn_h2 = 25;
+    int btn_gap = 4;
+    int btn_col_w = btn_w + 8;
+    int list_x = btn_col_w;
+    int list_w = sp_w - list_x - 4;
+    if (list_w < 50) list_w = 50;
+
+    MoveWindow(state.hwnd_js_selected_list, list_x, 4, list_w, sp_h - 8, TRUE);
+    ListView_SetColumnWidth(state.hwnd_js_selected_list, 0, list_w - 8);
+
+    // Stack buttons vertically.
+    int by2 = 4;
+    MoveWindow(state.hwnd_js_btn_add, 4, by2, btn_w, btn_h2, TRUE);       by2 += btn_h2 + btn_gap;
+    MoveWindow(state.hwnd_js_btn_save, 4, by2, btn_w, btn_h2, TRUE);      by2 += btn_h2 + btn_gap;
+    MoveWindow(state.hwnd_js_btn_load, 4, by2, btn_w, btn_h2, TRUE);      by2 += btn_h2 + btn_gap;
+    MoveWindow(state.hwnd_js_btn_clear, 4, by2, btn_w, btn_h2, TRUE);     by2 += btn_h2 + btn_gap;
+    MoveWindow(state.hwnd_js_btn_remove, 4, by2, btn_w, btn_h2, TRUE);    by2 += btn_h2 + btn_gap * 3;
+    MoveWindow(state.hwnd_js_btn_process, 4, by2, btn_w, btn_h2, TRUE);
 }
 
 // ---------------------------------------------------------------------------
@@ -755,8 +1649,8 @@ void update_display(AppState& state) {
 
     InvalidateRect(state.hwnd_image_panel, nullptr, TRUE);
     update_statusbar(state);
-    update_step_log(state);
     update_title(state);
+    update_exception_list(state);
 }
 
 void update_title(AppState& state) {
@@ -901,6 +1795,30 @@ void do_process_current(AppState& state) {
 }
 
 void do_process_all(AppState& state) {
+    // If we have selected files but no entries loaded, load them first.
+    if (state.entries.empty() && !state.selected_files.empty()) {
+        SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+        for (auto& path : state.selected_files) {
+            auto ext = to_lower(path.extension().string());
+            std::size_t pages = 1;
+            if (ext == ".tif" || ext == ".tiff") {
+                pages = count_tiff_pages(path);
+                if (pages == 0) pages = 1;
+            }
+            for (std::size_t p = 0; p < pages; ++p) {
+                auto img = load_image_file(path, p);
+                if (img.empty()) break;
+                ImageEntry entry;
+                entry.source_path = path;
+                entry.page_index = p;
+                entry.original = std::move(img);
+                state.entries.push_back(std::move(entry));
+            }
+        }
+        if (!state.entries.empty()) state.current_index = 0;
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    }
+
     if (state.entries.empty()) {
         MessageBoxW(state.hwnd_main, L"No images loaded.", L"Info", MB_OK);
         return;
@@ -915,8 +1833,12 @@ void do_process_all(AppState& state) {
         if (result.success) {
             entry.processed = std::move(result.image);
             entry.result = std::move(result);
+            entry.is_exception = false;
+            entry.exception_reason.clear();
             ++succeeded;
         } else {
+            entry.is_exception = true;
+            entry.exception_reason = result.error;
             ++failed;
         }
     }
@@ -924,12 +1846,17 @@ void do_process_all(AppState& state) {
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
 
     state.showing_processed = true;
+
+    // Show exception list if there are exceptions.
+    bool has_exceptions = failed > 0;
+    ShowWindow(state.hwnd_exception_list, has_exceptions ? SW_SHOW : SW_HIDE);
+    layout_children(state);
     update_display(state);
 
     std::wostringstream msg;
     msg << L"Processed " << succeeded << L" of " << state.entries.size()
         << L" pages.";
-    if (failed > 0) msg << L"\n" << failed << L" failed.";
+    if (failed > 0) msg << L"\n" << failed << L" exceptions.";
     MessageBoxW(state.hwnd_main, msg.str().c_str(), L"Batch Complete", MB_OK);
 }
 
@@ -1464,10 +2391,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         create_toolbar(*state);
         create_statusbar(*state);
         create_image_panel(*state);
-        create_step_log(*state);
+        create_main_tabs(*state);
+
+        // Exception list (bottom of image area, initially hidden).
+        state->hwnd_exception_list = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+            WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS,
+            0, 0, 100, 100, state->hwnd_main,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_EX_LIST)),
+            state->hinstance, nullptr);
+        set_ui_font(state->hwnd_exception_list, state->hfont_ui);
+        ListView_SetExtendedListViewStyle(state->hwnd_exception_list,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+        {
+            LVCOLUMNW col{};
+            col.mask = LVCF_TEXT | LVCF_WIDTH;
+            col.cx = 200;
+            col.pszText = const_cast<wchar_t*>(L"File");
+            SendMessageW(state->hwnd_exception_list, LVM_INSERTCOLUMNW, 0,
+                         reinterpret_cast<LPARAM>(&col));
+            col.cx = 300;
+            col.pszText = const_cast<wchar_t*>(L"Exception");
+            SendMessageW(state->hwnd_exception_list, LVM_INSERTCOLUMNW, 1,
+                         reinterpret_cast<LPARAM>(&col));
+        }
 
         update_statusbar(*state);
-        update_step_log(*state);
+        populate_file_list(*state);
 
         DragAcceptFiles(hwnd, TRUE);
         return 0;
@@ -1519,6 +2469,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         if (!state) break;
         auto* hdr = reinterpret_cast<NMHDR*>(lp);
+
+        // Toolbar tooltips.
         if (hdr->code == TBN_GETINFOTIPW) {
             auto* tip = reinterpret_cast<NMTBGETINFOTIPW*>(lp);
             const wchar_t* text = nullptr;
@@ -1537,6 +2489,60 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                            text, _TRUNCATE);
             }
         }
+
+        // Main tab change.
+        if (hdr->hwndFrom == state->hwnd_main_tab && hdr->code == TCN_SELCHANGE) {
+            int sel = static_cast<int>(
+                SendMessageW(state->hwnd_main_tab, TCM_GETCURSEL, 0, 0));
+            switch_tab(*state, sel);
+        }
+
+        // Job Setup sub-tab change.
+        if (hdr->hwndFrom == state->hwnd_js_sub_tab && hdr->code == TCN_SELCHANGE) {
+            int sel = static_cast<int>(
+                SendMessageW(state->hwnd_js_sub_tab, TCM_GETCURSEL, 0, 0));
+            switch_js_sub_tab(*state, sel);
+        }
+
+        // Double-click on file list → navigate dir or preview image.
+        if (hdr->hwndFrom == state->hwnd_js_file_list && hdr->code == NM_DBLCLK) {
+            handle_file_list_dblclick(*state);
+        }
+
+        // Double-click on selected list → preview that file.
+        if (hdr->hwndFrom == state->hwnd_js_selected_list && hdr->code == NM_DBLCLK) {
+            int sel = ListView_GetNextItem(state->hwnd_js_selected_list, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < static_cast<int>(state->selected_files.size())) {
+                auto& path = state->selected_files[sel];
+                state->entries.clear();
+                state->current_index = -1;
+                state->showing_processed = false;
+                state->current_file = path;
+                auto ext = to_lower(path.extension().string());
+                std::size_t pages = 1;
+                if (ext == ".tif" || ext == ".tiff") {
+                    pages = count_tiff_pages(path);
+                    if (pages == 0) pages = 1;
+                }
+                SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                for (std::size_t p = 0; p < pages; ++p) {
+                    auto img = load_image_file(path, p);
+                    if (img.empty()) break;
+                    ImageEntry entry;
+                    entry.source_path = path;
+                    entry.page_index = p;
+                    entry.original = std::move(img);
+                    state->entries.push_back(std::move(entry));
+                }
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                if (!state->entries.empty()) {
+                    state->current_index = 0;
+                    state->fit_mode = true;
+                    update_display(*state);
+                }
+            }
+        }
+
         return 0;
     }
 
@@ -1689,6 +2695,115 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 update_statusbar(*state);
             }
             break;
+
+        // --- Job Setup buttons ---
+        case IDC_JS_LOOK_IN_BROWSE: {
+            wchar_t path[MAX_PATH] = {};
+            BROWSEINFOW bi{};
+            bi.hwndOwner = hwnd;
+            bi.pszDisplayName = path;
+            bi.lpszTitle = L"Select folder to browse";
+            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            auto* pidl = SHBrowseForFolderW(&bi);
+            if (pidl && SHGetPathFromIDListW(pidl, path)) {
+                state->browse_dir = path;
+                populate_file_list(*state);
+            }
+            if (pidl) CoTaskMemFree(pidl);
+            break;
+        }
+        case IDC_JS_UP_DIR_BTN: {
+            auto parent_dir = state->browse_dir.parent_path();
+            if (parent_dir != state->browse_dir && !parent_dir.empty()) {
+                state->browse_dir = parent_dir;
+                populate_file_list(*state);
+            }
+            break;
+        }
+        case IDC_JS_LIST_VIEW_BTN:
+            // Switch file list to LVS_LIST style.
+            state->js_detail_view = false;
+            SetWindowLongPtrW(state->hwnd_js_file_list, GWL_STYLE,
+                (GetWindowLongPtrW(state->hwnd_js_file_list, GWL_STYLE)
+                    & ~(LVS_REPORT | LVS_LIST)) | LVS_LIST);
+            InvalidateRect(state->hwnd_js_file_list, nullptr, TRUE);
+            break;
+        case IDC_JS_DETAIL_VIEW_BTN:
+            // Switch file list to LVS_REPORT style.
+            state->js_detail_view = true;
+            SetWindowLongPtrW(state->hwnd_js_file_list, GWL_STYLE,
+                (GetWindowLongPtrW(state->hwnd_js_file_list, GWL_STYLE)
+                    & ~(LVS_REPORT | LVS_LIST)) | LVS_REPORT);
+            InvalidateRect(state->hwnd_js_file_list, nullptr, TRUE);
+            break;
+        case IDC_JS_ADD_BTN:     do_add_selected(*state); break;
+        case IDC_JS_REMOVE_BTN:  do_remove_selected(*state); break;
+        case IDC_JS_CLEAR_BTN:   do_clear_selected(*state); break;
+        case IDC_JS_PROCESS_BTN: do_process_all(*state); break;
+        case IDC_JS_SAVE_LIST_BTN: {
+            // Save selected files list to a text file.
+            wchar_t filename[MAX_PATH] = L"selected_files.txt";
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"Text Files\0*.txt\0All Files\0*.*\0";
+            ofn.lpstrFile = filename;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_OVERWRITEPROMPT;
+            ofn.lpstrTitle = L"Save File List";
+            ofn.lpstrDefExt = L"txt";
+            if (GetSaveFileNameW(&ofn)) {
+                std::ofstream out(filename);
+                for (auto& f : state->selected_files)
+                    out << f.string() << "\n";
+            }
+            break;
+        }
+        case IDC_JS_LOAD_LIST_BTN: {
+            // Load selected files list from a text file.
+            wchar_t filename[MAX_PATH] = {};
+            OPENFILENAMEW ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"Text Files\0*.txt\0All Files\0*.*\0";
+            ofn.lpstrFile = filename;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST;
+            ofn.lpstrTitle = L"Load File List";
+            if (GetOpenFileNameW(&ofn)) {
+                std::ifstream in(filename);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    auto p = fs::path(line);
+                    if (fs::exists(p)) {
+                        bool dup = false;
+                        for (auto& f : state->selected_files)
+                            if (f == p) { dup = true; break; }
+                        if (!dup) state->selected_files.push_back(p);
+                    }
+                }
+                populate_selected_list(*state);
+            }
+            break;
+        }
+        case IDC_JS_FILE_TYPE_COMBO:
+            if (HIWORD(wp) == CBN_SELCHANGE)
+                populate_file_list(*state);
+            break;
+        case IDC_JS_OUTDIR_BROWSE: {
+            wchar_t path[MAX_PATH] = {};
+            BROWSEINFOW bi{};
+            bi.hwndOwner = hwnd;
+            bi.pszDisplayName = path;
+            bi.lpszTitle = L"Select output directory";
+            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            auto* pidl = SHBrowseForFolderW(&bi);
+            if (pidl && SHGetPathFromIDListW(pidl, path))
+                SetDlgItemTextW(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO, path);
+            if (pidl) CoTaskMemFree(pidl);
+            break;
+        }
 
         case IDM_HELP_ABOUT:
             MessageBoxW(hwnd,
@@ -1848,6 +2963,16 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
     AppState state;
     state.hinstance = instance;
+
+    // Create UI fonts.
+    state.hfont_ui = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                  CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                  DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    state.hfont_mono = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                    CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                    FIXED_PITCH | FF_MODERN, L"Consolas");
 
     HWND hwnd = CreateWindowExW(
         0, kWindowClassName, L"PPP Job Viewer",
