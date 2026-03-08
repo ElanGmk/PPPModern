@@ -207,7 +207,7 @@ void write_edge_cleanup_config(JsonWriter& w, std::string_view k, const EdgeClea
     w.key(k);
     w.begin_object();
     w.kv("enabled", ec.enabled);
-    w.kv("order", ec.order == EdgeCleanupOrder::BeforeDeskew ? "before_deskew" : "after_deskew");
+    w.kv("order", to_string(ec.order));
     write_edge_values(w, "set1", ec.set1);
     write_edge_values(w, "set2", ec.set2);
     w.end_object();
@@ -230,6 +230,16 @@ void write_subimage_config(JsonWriter& w, std::string_view k, const SubimageConf
     w.kv("report_small", sc.report_small);
     w.kv("min_width_px", sc.min_width_px);
     w.kv("min_height_px", sc.min_height_px);
+    w.end_object();
+}
+
+void write_blank_page_config(JsonWriter& w, std::string_view k, const BlankPageConfig& bp) {
+    w.key(k);
+    w.begin_object();
+    w.kv("enabled", bp.enabled);
+    w.kv("threshold_percent", bp.threshold_percent);
+    w.kv("min_components", bp.min_components);
+    write_measurement(w, "edge_margin", bp.edge_margin);
     w.end_object();
 }
 
@@ -276,8 +286,8 @@ void write_output_config(JsonWriter& w, std::string_view k, const OutputConfig& 
     w.kv("new_extension", oc.new_extension);
     w.kv("save_to_different_dir", oc.save_to_different_dir);
     w.kv("output_directory", oc.output_directory);
-    w.kv("conflict_policy", oc.conflict_policy == ConflictPolicy::Report ? "report" : "overwrite");
-    w.kv("path_mode", oc.path_mode == PathMode::Absolute ? "absolute" : "portable");
+    w.kv("conflict_policy", to_string(oc.conflict_policy));
+    w.kv("path_mode", to_string(oc.path_mode));
     w.end_object();
 }
 
@@ -519,9 +529,9 @@ template <typename Fn>
         if (k == "mode") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "set") me.mode = MarginMode::Set;
-            else if (*v == "check") me.mode = MarginMode::Check;
-            else return false;
+            auto m = margin_mode_from_string(*v);
+            if (!m) return false;
+            me.mode = *m;
         } else {
             return skip_value(p);
         }
@@ -562,9 +572,9 @@ template <typename Fn>
         } else if (k == "orientation") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "portrait") cc.orientation = Orientation::Portrait;
-            else if (*v == "landscape") cc.orientation = Orientation::Landscape;
-            else return false;
+            auto o = orientation_from_string(*v);
+            if (!o) return false;
+            cc.orientation = *o;
         } else {
             return skip_value(p);
         }
@@ -602,10 +612,9 @@ template <typename Fn>
         if (k == "mode") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "none") dc.mode = DespeckleMode::None;
-            else if (*v == "single_pixel") dc.mode = DespeckleMode::SinglePixel;
-            else if (*v == "object") dc.mode = DespeckleMode::Object;
-            else return false;
+            auto m = despeckle_mode_from_string(*v);
+            if (!m) return false;
+            dc.mode = *m;
         } else if (k == "object_min") { auto v = parse_integer(p); if (!v) return false; dc.object_min = static_cast<std::int32_t>(*v);
         } else if (k == "object_max") { auto v = parse_integer(p); if (!v) return false; dc.object_max = static_cast<std::int32_t>(*v);
         } else {
@@ -621,9 +630,9 @@ template <typename Fn>
         if (k == "order") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "before_deskew") ec.order = EdgeCleanupOrder::BeforeDeskew;
-            else if (*v == "after_deskew") ec.order = EdgeCleanupOrder::AfterDeskew;
-            else return false;
+            auto o = edge_cleanup_order_from_string(*v);
+            if (!o) return false;
+            ec.order = *o;
             return true;
         }
         if (k == "set1") return parse_edge_values(p, ec.set1);
@@ -652,6 +661,16 @@ template <typename Fn>
     });
 }
 
+[[nodiscard]] bool parse_blank_page_config(JsonParser& p, BlankPageConfig& bp) {
+    return parse_object(p, [&](const std::string& k) -> bool {
+        if (k == "enabled") { auto v = parse_bool(p); if (!v) return false; bp.enabled = *v; return true; }
+        if (k == "threshold_percent") { auto v = parse_double(p); if (!v) return false; bp.threshold_percent = *v; return true; }
+        if (k == "min_components") { auto v = parse_integer(p); if (!v) return false; bp.min_components = static_cast<std::int32_t>(*v); return true; }
+        if (k == "edge_margin") return parse_measurement(p, bp.edge_margin);
+        return skip_value(p);
+    });
+}
+
 [[nodiscard]] bool parse_movement_limit_config(JsonParser& p, MovementLimitConfig& ml) {
     return parse_object(p, [&](const std::string& k) -> bool {
         if (k == "enabled") { auto v = parse_bool(p); if (!v) return false; ml.enabled = *v; return true; }
@@ -669,11 +688,9 @@ template <typename Fn>
         if (k == "source") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "subimage") rc.source = ResizeFrom::Subimage;
-            else if (*v == "full_page") rc.source = ResizeFrom::FullPage;
-            else if (*v == "custom") rc.source = ResizeFrom::Custom;
-            else if (*v == "smart") rc.source = ResizeFrom::Smart;
-            else return false;
+            auto s = resize_from_from_string(*v);
+            if (!s) return false;
+            rc.source = *s;
             return true;
         }
         if (k == "source_set1") return parse_edge_values(p, rc.source_set1);
@@ -684,19 +701,17 @@ template <typename Fn>
         if (k == "v_alignment") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "top") rc.v_alignment = VAlignment::Top;
-            else if (*v == "center") rc.v_alignment = VAlignment::Center;
-            else if (*v == "bottom") rc.v_alignment = VAlignment::Bottom;
-            else if (*v == "proportional") rc.v_alignment = VAlignment::Proportional;
-            else return false;
+            auto va = v_alignment_from_string(*v);
+            if (!va) return false;
+            rc.v_alignment = *va;
             return true;
         }
         if (k == "h_alignment") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "center") rc.h_alignment = HAlignment::Center;
-            else if (*v == "proportional") rc.h_alignment = HAlignment::Proportional;
-            else return false;
+            auto ha = h_alignment_from_string(*v);
+            if (!ha) return false;
+            rc.h_alignment = *ha;
             return true;
         }
         if (k == "allow_shrink") { auto v = parse_bool(p); if (!v) return false; rc.allow_shrink = *v; return true; }
@@ -729,17 +744,17 @@ template <typename Fn>
         if (k == "conflict_policy") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "report") oc.conflict_policy = ConflictPolicy::Report;
-            else if (*v == "overwrite") oc.conflict_policy = ConflictPolicy::Overwrite;
-            else return false;
+            auto cp = conflict_policy_from_string(*v);
+            if (!cp) return false;
+            oc.conflict_policy = *cp;
             return true;
         }
         if (k == "path_mode") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "absolute") oc.path_mode = PathMode::Absolute;
-            else if (*v == "portable") oc.path_mode = PathMode::Portable;
-            else return false;
+            auto pm = path_mode_from_string(*v);
+            if (!pm) return false;
+            oc.path_mode = *pm;
             return true;
         }
         return skip_value(p);
@@ -837,6 +852,7 @@ std::string processing_profile_to_json(const ProcessingProfile& profile) {
     write_edge_cleanup_config(w, "edge_cleanup", profile.edge_cleanup);
     write_hole_cleanup_config(w, "hole_cleanup", profile.hole_cleanup);
     write_subimage_config(w, "subimage", profile.subimage);
+    write_blank_page_config(w, "blank_page", profile.blank_page);
     write_movement_limit_config(w, "movement_limit", profile.movement_limit);
     write_resize_config(w, "resize", profile.resize);
     write_output_config(w, "output", profile.output);
@@ -873,11 +889,9 @@ std::optional<ProcessingProfile> processing_profile_from_json(std::string_view j
         if (k == "rotation") {
             auto v = parse_string(p);
             if (!v) return false;
-            if (*v == "none") profile.rotation = Rotation::None;
-            else if (*v == "cw90") profile.rotation = Rotation::CW90;
-            else if (*v == "ccw90") profile.rotation = Rotation::CCW90;
-            else if (*v == "r180") profile.rotation = Rotation::R180;
-            else return false;
+            auto r = rotation_from_string(*v);
+            if (!r) return false;
+            profile.rotation = *r;
             return true;
         }
         if (k == "canvas") return parse_canvas_config(p, profile.canvas);
@@ -888,6 +902,7 @@ std::optional<ProcessingProfile> processing_profile_from_json(std::string_view j
         if (k == "edge_cleanup") return parse_edge_cleanup_config(p, profile.edge_cleanup);
         if (k == "hole_cleanup") return parse_hole_cleanup_config(p, profile.hole_cleanup);
         if (k == "subimage") return parse_subimage_config(p, profile.subimage);
+        if (k == "blank_page") return parse_blank_page_config(p, profile.blank_page);
         if (k == "movement_limit") return parse_movement_limit_config(p, profile.movement_limit);
         if (k == "resize") return parse_resize_config(p, profile.resize);
         if (k == "output") return parse_output_config(p, profile.output);

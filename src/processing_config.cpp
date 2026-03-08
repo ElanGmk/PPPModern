@@ -149,6 +149,36 @@ std::string_view to_string(HAlignment alignment) noexcept {
     return "unknown";
 }
 
+std::string_view to_string(EdgeCleanupOrder order) noexcept {
+    switch (order) {
+    case EdgeCleanupOrder::BeforeDeskew:
+        return "before_deskew";
+    case EdgeCleanupOrder::AfterDeskew:
+        return "after_deskew";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(ConflictPolicy policy) noexcept {
+    switch (policy) {
+    case ConflictPolicy::Report:
+        return "report";
+    case ConflictPolicy::Overwrite:
+        return "overwrite";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(PathMode mode) noexcept {
+    switch (mode) {
+    case PathMode::Absolute:
+        return "absolute";
+    case PathMode::Portable:
+        return "portable";
+    }
+    return "unknown";
+}
+
 // ---------------------------------------------------------------------------
 // from_string implementations
 // ---------------------------------------------------------------------------
@@ -179,6 +209,83 @@ std::optional<RasterFormat> raster_format_from_string(std::string_view s) noexce
     if (v == "group4" || v == "g4") return RasterFormat::Group4;
     if (v == "lzw") return RasterFormat::LZW;
     if (v == "jpeg" || v == "jpg") return RasterFormat::JPEG;
+    return std::nullopt;
+}
+
+std::optional<MarginMode> margin_mode_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "set") return MarginMode::Set;
+    if (v == "check") return MarginMode::Check;
+    return std::nullopt;
+}
+
+std::optional<DespeckleMode> despeckle_mode_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "none") return DespeckleMode::None;
+    if (v == "single_pixel") return DespeckleMode::SinglePixel;
+    if (v == "object") return DespeckleMode::Object;
+    return std::nullopt;
+}
+
+std::optional<Rotation> rotation_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "none") return Rotation::None;
+    if (v == "cw90") return Rotation::CW90;
+    if (v == "ccw90") return Rotation::CCW90;
+    if (v == "r180") return Rotation::R180;
+    return std::nullopt;
+}
+
+std::optional<Orientation> orientation_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "portrait") return Orientation::Portrait;
+    if (v == "landscape") return Orientation::Landscape;
+    return std::nullopt;
+}
+
+std::optional<ResizeFrom> resize_from_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "subimage") return ResizeFrom::Subimage;
+    if (v == "full_page") return ResizeFrom::FullPage;
+    if (v == "custom") return ResizeFrom::Custom;
+    if (v == "smart") return ResizeFrom::Smart;
+    return std::nullopt;
+}
+
+std::optional<VAlignment> v_alignment_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "top") return VAlignment::Top;
+    if (v == "center") return VAlignment::Center;
+    if (v == "bottom") return VAlignment::Bottom;
+    if (v == "proportional") return VAlignment::Proportional;
+    return std::nullopt;
+}
+
+std::optional<HAlignment> h_alignment_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "center") return HAlignment::Center;
+    if (v == "proportional") return HAlignment::Proportional;
+    return std::nullopt;
+}
+
+std::optional<EdgeCleanupOrder> edge_cleanup_order_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "before_deskew") return EdgeCleanupOrder::BeforeDeskew;
+    if (v == "after_deskew") return EdgeCleanupOrder::AfterDeskew;
+    return std::nullopt;
+}
+
+std::optional<ConflictPolicy> conflict_policy_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "report") return ConflictPolicy::Report;
+    if (v == "overwrite") return ConflictPolicy::Overwrite;
+    return std::nullopt;
+}
+
+std::optional<PathMode> path_mode_from_string(std::string_view s) noexcept {
+    const auto v = normalized(s);
+    if (v == "absolute") return PathMode::Absolute;
+    if (v == "portable") return PathMode::Portable;
     return std::nullopt;
 }
 

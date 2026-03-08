@@ -45,17 +45,17 @@ struct ProcessingResult {
 /// Run the full PPP processing pipeline on an image.
 ///
 /// Applies the following steps in order (each gated by its config):
-///   1. Rotation (CW90, CCW90, 180)
-///   2. Edge cleanup (before deskew, if configured)
-///   3. Hole cleanup
-///   4. Despeckle
-///   5. Edge cleanup (after deskew, if configured)
-///   6. Subimage detection
-///   7. Canvas resolution
-///   8. Margin application / content positioning
-///
-/// Deskew is not yet implemented (config is recognized but skipped).
-/// Resize is not yet implemented (config is recognized but skipped).
+///   1.  Rotation (CW90, CCW90, 180)
+///   2.  Edge cleanup (before deskew, if configured)
+///   3.  Deskew (projection profile skew detection + rotation)
+///   4.  Hole cleanup
+///   5.  Despeckle
+///   6.  Edge cleanup (after deskew, if configured)
+///   7.  Subimage detection
+///   8.  Blank page detection
+///   9.  Canvas resolution
+///   10. Margin application / content positioning
+///   11. Resize
 ///
 /// @param image    Source image to process.
 /// @param profile  Processing profile with all step configurations.
@@ -69,8 +69,9 @@ struct ProcessingResult {
 /// Run a single named step of the pipeline.  Useful for testing or
 /// preview of individual operations.
 ///
-/// Supported step names: "rotate", "edge_cleanup", "hole_cleanup",
-/// "despeckle", "detect_subimage", "margins".
+/// Supported step names: "rotate", "edge_cleanup", "deskew",
+/// "hole_cleanup", "despeckle", "blank_page", "detect_subimage",
+/// "margins", "resize".
 [[nodiscard]] ProcessingResult run_step(
     const Image& image,
     const ProcessingProfile& profile,

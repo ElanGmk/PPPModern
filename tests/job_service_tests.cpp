@@ -4458,6 +4458,122 @@ bool test_pipeline_blank_page_step() {
 }
 
 // ---------------------------------------------------------------------------
+// Enum from_string round-trip tests
+// ---------------------------------------------------------------------------
+
+bool test_enum_from_string_roundtrips() {
+    using namespace ppp::core;
+
+    // MarginMode.
+    if (margin_mode_from_string("set") != MarginMode::Set) return false;
+    if (margin_mode_from_string("check") != MarginMode::Check) return false;
+    if (margin_mode_from_string("bogus").has_value()) return false;
+
+    // DespeckleMode.
+    if (despeckle_mode_from_string("none") != DespeckleMode::None) return false;
+    if (despeckle_mode_from_string("single_pixel") != DespeckleMode::SinglePixel) return false;
+    if (despeckle_mode_from_string("object") != DespeckleMode::Object) return false;
+
+    // Rotation.
+    if (rotation_from_string("cw90") != Rotation::CW90) return false;
+    if (rotation_from_string("ccw90") != Rotation::CCW90) return false;
+    if (rotation_from_string("r180") != Rotation::R180) return false;
+    if (rotation_from_string("none") != Rotation::None) return false;
+
+    // Orientation.
+    if (orientation_from_string("portrait") != Orientation::Portrait) return false;
+    if (orientation_from_string("landscape") != Orientation::Landscape) return false;
+
+    // ResizeFrom.
+    if (resize_from_from_string("subimage") != ResizeFrom::Subimage) return false;
+    if (resize_from_from_string("full_page") != ResizeFrom::FullPage) return false;
+    if (resize_from_from_string("custom") != ResizeFrom::Custom) return false;
+    if (resize_from_from_string("smart") != ResizeFrom::Smart) return false;
+
+    // VAlignment / HAlignment.
+    if (v_alignment_from_string("top") != VAlignment::Top) return false;
+    if (v_alignment_from_string("center") != VAlignment::Center) return false;
+    if (v_alignment_from_string("bottom") != VAlignment::Bottom) return false;
+    if (v_alignment_from_string("proportional") != VAlignment::Proportional) return false;
+    if (h_alignment_from_string("center") != HAlignment::Center) return false;
+    if (h_alignment_from_string("proportional") != HAlignment::Proportional) return false;
+
+    // EdgeCleanupOrder.
+    if (edge_cleanup_order_from_string("before_deskew") != EdgeCleanupOrder::BeforeDeskew) return false;
+    if (edge_cleanup_order_from_string("after_deskew") != EdgeCleanupOrder::AfterDeskew) return false;
+
+    // ConflictPolicy.
+    if (conflict_policy_from_string("report") != ConflictPolicy::Report) return false;
+    if (conflict_policy_from_string("overwrite") != ConflictPolicy::Overwrite) return false;
+
+    // PathMode.
+    if (path_mode_from_string("absolute") != PathMode::Absolute) return false;
+    if (path_mode_from_string("portable") != PathMode::Portable) return false;
+
+    // to_string → from_string round-trips.
+    if (rotation_from_string(to_string(Rotation::CW90)) != Rotation::CW90) return false;
+    if (orientation_from_string(to_string(Orientation::Landscape)) != Orientation::Landscape) return false;
+    if (edge_cleanup_order_from_string(to_string(EdgeCleanupOrder::AfterDeskew)) != EdgeCleanupOrder::AfterDeskew) return false;
+    if (conflict_policy_from_string(to_string(ConflictPolicy::Overwrite)) != ConflictPolicy::Overwrite) return false;
+    if (path_mode_from_string(to_string(PathMode::Portable)) != PathMode::Portable) return false;
+
+    return true;
+}
+
+bool test_blank_page_config_json_roundtrip() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    profile.name = "blank_test";
+    profile.blank_page.enabled = true;
+    profile.blank_page.threshold_percent = 1.5;
+    profile.blank_page.min_components = 3;
+    profile.blank_page.edge_margin = {0.25, MeasurementUnit::Inches};
+
+    auto json = processing_profile_to_json(profile);
+
+    // Verify blank_page appears in JSON.
+    if (json.find("blank_page") == std::string::npos) {
+        std::cerr << "blank_page not in JSON output" << std::endl;
+        return false;
+    }
+    if (json.find("threshold_percent") == std::string::npos) {
+        std::cerr << "threshold_percent not in JSON output" << std::endl;
+        return false;
+    }
+
+    // Parse back.
+    auto parsed = processing_profile_from_json(json);
+    if (!parsed) {
+        std::cerr << "blank_page JSON parse failed" << std::endl;
+        return false;
+    }
+
+    if (!parsed->blank_page.enabled) {
+        std::cerr << "blank_page.enabled not preserved" << std::endl;
+        return false;
+    }
+    if (std::abs(parsed->blank_page.threshold_percent - 1.5) > 0.01) {
+        std::cerr << "blank_page.threshold_percent not preserved" << std::endl;
+        return false;
+    }
+    if (parsed->blank_page.min_components != 3) {
+        std::cerr << "blank_page.min_components not preserved" << std::endl;
+        return false;
+    }
+    if (std::abs(parsed->blank_page.edge_margin.value - 0.25) > 0.01) {
+        std::cerr << "blank_page.edge_margin not preserved" << std::endl;
+        return false;
+    }
+    if (parsed->blank_page.edge_margin.unit != MeasurementUnit::Inches) {
+        std::cerr << "blank_page.edge_margin.unit not preserved" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // BMP tests
 // ---------------------------------------------------------------------------
 
@@ -5002,6 +5118,8 @@ int main() {
         {"blank_page_edge_margin", test_blank_page_edge_margin},
         {"blank_page_gray_input", test_blank_page_gray_input},
         {"pipeline_blank_page_step", test_pipeline_blank_page_step},
+        {"enum_from_string_roundtrips", test_enum_from_string_roundtrips},
+        {"blank_page_config_json_roundtrip", test_blank_page_config_json_roundtrip},
         {"bmp_write_read_gray8", test_bmp_write_read_gray8},
         {"bmp_write_read_rgb24", test_bmp_write_read_rgb24},
         {"bmp_write_read_bw1", test_bmp_write_read_bw1},

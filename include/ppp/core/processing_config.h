@@ -430,9 +430,22 @@ struct ProcessingProfile {
 [[nodiscard]] std::string_view to_string(ResizeFrom source) noexcept;
 [[nodiscard]] std::string_view to_string(VAlignment alignment) noexcept;
 [[nodiscard]] std::string_view to_string(HAlignment alignment) noexcept;
+[[nodiscard]] std::string_view to_string(EdgeCleanupOrder order) noexcept;
+[[nodiscard]] std::string_view to_string(ConflictPolicy policy) noexcept;
+[[nodiscard]] std::string_view to_string(PathMode mode) noexcept;
 
 [[nodiscard]] std::optional<MeasurementUnit> measurement_unit_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<CanvasPreset> canvas_preset_from_string(std::string_view s) noexcept;
 [[nodiscard]] std::optional<RasterFormat> raster_format_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<MarginMode> margin_mode_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<DespeckleMode> despeckle_mode_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<Rotation> rotation_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<Orientation> orientation_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<ResizeFrom> resize_from_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<VAlignment> v_alignment_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<HAlignment> h_alignment_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<EdgeCleanupOrder> edge_cleanup_order_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<ConflictPolicy> conflict_policy_from_string(std::string_view s) noexcept;
+[[nodiscard]] std::optional<PathMode> path_mode_from_string(std::string_view s) noexcept;
 
 } // namespace ppp::core
