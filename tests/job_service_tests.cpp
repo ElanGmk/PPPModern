@@ -13,6 +13,7 @@
 #include "ppp/core/processing_pipeline.h"
 #include "ppp/core/tiff_writer.h"
 #include "ppp/core/bmp.h"
+#include "ppp/core/output_writer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -4810,6 +4811,201 @@ bool test_bmp_dpi_preservation() {
 }
 
 // ---------------------------------------------------------------------------
+// Output writer tests
+// ---------------------------------------------------------------------------
+
+bool test_output_write_tiff() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(128);
+
+    auto tmp_dir = fs::temp_directory_path() / "ppp_output_test";
+    fs::create_directories(tmp_dir);
+    auto source = tmp_dir / "source.tif";
+
+    OutputConfig config;
+    config.tiff_output = true;
+    config.raster_format = RasterFormat::Raw;  // Uncompressed for read-back.
+    config.save_to_different_dir = false;
+
+    auto result = output::write_output(img, source, config);
+    if (!result.success) {
+        std::cerr << "output tiff: " << result.error << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+    if (result.format != "tiff") {
+        std::cerr << "output tiff: format=" << result.format << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+    if (!fs::exists(result.output_path)) {
+        std::cerr << "output tiff: file not created" << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    // Verify we can read it back (reader only supports uncompressed).
+    auto img2 = tiff::read_tiff_image_file(result.output_path);
+    if (img2.empty()) {
+        std::cerr << "output tiff: cannot read back" << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    fs::remove_all(tmp_dir);
+    return true;
+}
+
+bool test_output_write_bmp() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(60, 40, PixelFormat::RGB24, 300.0, 300.0);
+    img.fill(0);
+
+    auto tmp_dir = fs::temp_directory_path() / "ppp_output_test_bmp";
+    fs::create_directories(tmp_dir);
+    auto source = tmp_dir / "source.bmp";
+
+    OutputConfig config;
+    config.new_extension = ".bmp";
+    config.save_to_different_dir = false;
+
+    auto result = output::write_output(img, source, config);
+    if (!result.success) {
+        std::cerr << "output bmp: " << result.error << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+    if (result.format != "bmp") {
+        std::cerr << "output bmp: format=" << result.format << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    fs::remove_all(tmp_dir);
+    return true;
+}
+
+bool test_output_different_dir() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(50, 30, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(200);
+
+    auto tmp_dir = fs::temp_directory_path() / "ppp_output_diffdir";
+    auto out_dir = tmp_dir / "output";
+
+    OutputConfig config;
+    config.save_to_different_dir = true;
+    config.output_directory = out_dir.string();
+    config.tiff_output = true;
+
+    auto result = output::write_output(img, tmp_dir / "input.tif", config);
+    if (!result.success) {
+        std::cerr << "output diffdir: " << result.error << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    // Should be in the output directory.
+    if (result.output_path.parent_path() != out_dir) {
+        std::cerr << "output diffdir: wrong dir: " << result.output_path.string() << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    fs::remove_all(tmp_dir);
+    return true;
+}
+
+bool test_output_conflict_report() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(30, 20, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(100);
+
+    auto tmp_dir = fs::temp_directory_path() / "ppp_output_conflict";
+    fs::create_directories(tmp_dir);
+
+    // Write the first time.
+    OutputConfig config;
+    config.save_to_different_dir = false;
+    config.conflict_policy = ConflictPolicy::Overwrite;
+    auto source = tmp_dir / "test.tif";
+    auto r1 = output::write_output(img, source, config);
+    if (!r1.success) { fs::remove_all(tmp_dir); return false; }
+
+    // Now try with Report policy — should fail since file exists.
+    config.conflict_policy = ConflictPolicy::Report;
+    auto r2 = output::write_output(img, source, config);
+    if (r2.success) {
+        std::cerr << "output conflict: should have failed" << std::endl;
+        fs::remove_all(tmp_dir);
+        return false;
+    }
+
+    fs::remove_all(tmp_dir);
+    return true;
+}
+
+bool test_output_write_to() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img(40, 30, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0);
+    img.set_bw_pixel(20, 15, 1);
+
+    auto tmp = fs::temp_directory_path() / "ppp_output_to.tif";
+    OutputConfig config;
+    config.raster_format = RasterFormat::Raw;  // Uncompressed for read-back.
+    auto result = output::write_output_to(img, tmp, config);
+    if (!result.success) {
+        std::cerr << "output write_to: " << result.error << std::endl;
+        return false;
+    }
+
+    auto img2 = tiff::read_tiff_image_file(tmp);
+    fs::remove(tmp);
+    if (img2.empty()) {
+        std::cerr << "output write_to: cannot read back" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool test_output_multipage() {
+    using namespace ppp::core;
+    namespace fs = std::filesystem;
+
+    Image img1(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img1.fill(100);
+    Image img2(50, 40, PixelFormat::Gray8, 300.0, 300.0);
+    img2.fill(200);
+
+    auto tmp = fs::temp_directory_path() / "ppp_output_multi.tif";
+    auto result = output::write_multipage_output({img1, img2}, tmp);
+    if (!result.success) {
+        std::cerr << "output multipage: " << result.error << std::endl;
+        return false;
+    }
+    if (!fs::exists(tmp)) {
+        std::cerr << "output multipage: file not created" << std::endl;
+        return false;
+    }
+
+    fs::remove(tmp);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Deskew tests
 // ---------------------------------------------------------------------------
 
@@ -5127,6 +5323,12 @@ int main() {
         {"bmp_file_roundtrip", test_bmp_file_roundtrip},
         {"bmp_invalid_data", test_bmp_invalid_data},
         {"bmp_dpi_preservation", test_bmp_dpi_preservation},
+        {"output_write_tiff", test_output_write_tiff},
+        {"output_write_bmp", test_output_write_bmp},
+        {"output_different_dir", test_output_different_dir},
+        {"output_conflict_report", test_output_conflict_report},
+        {"output_write_to", test_output_write_to},
+        {"output_multipage", test_output_multipage},
         {"detect_skew_angle_zero", test_detect_skew_angle_zero},
         {"rotate_arbitrary_identity", test_rotate_arbitrary_identity},
         {"rotate_arbitrary_bw1", test_rotate_arbitrary_bw1},
