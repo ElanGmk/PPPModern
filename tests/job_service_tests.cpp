@@ -10,6 +10,7 @@
 #include "ppp/core/geometry.h"
 #include "ppp/core/image.h"
 #include "ppp/core/image_ops.h"
+#include "ppp/core/processing_pipeline.h"
 
 #include <algorithm>
 #include <chrono>
@@ -3305,6 +3306,248 @@ bool test_ops_apply_margins_centered() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Processing pipeline tests
+// ---------------------------------------------------------------------------
+
+bool test_pipeline_empty_image() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    Image empty;
+    auto result = run_pipeline(empty, profile);
+    if (result.success) return false;
+    if (result.error != "empty source image") return false;
+
+    return true;
+}
+
+bool test_pipeline_passthrough() {
+    using namespace ppp::core;
+
+    // Default profile with nothing enabled → image passes through unchanged.
+    ProcessingProfile profile;
+    profile.position_image = false;  // Skip margin positioning.
+
+    Image img(100, 80, PixelFormat::Gray8, 300.0, 300.0);
+    img.fill(0x80);
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) { std::cerr << "pipeline failed: " << result.error << std::endl; return false; }
+    if (result.image.width() != 100 || result.image.height() != 80) return false;
+    if (result.image.row(0)[0] != 0x80) return false;
+
+    // Check that steps were logged.
+    bool found_rotate = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "rotate") found_rotate = true;
+    }
+    if (!found_rotate) return false;
+
+    return true;
+}
+
+bool test_pipeline_rotation() {
+    using namespace ppp::core;
+
+    ProcessingProfile profile;
+    profile.rotation = Rotation::CW90;
+    profile.position_image = false;
+
+    Image img(100, 50, PixelFormat::Gray8, 300.0, 300.0);
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) return false;
+    // CW90: 100x50 → 50x100.
+    if (result.image.width() != 50 || result.image.height() != 100) return false;
+
+    // Check step was logged as applied.
+    bool rotate_applied = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "rotate" && s.applied) rotate_applied = true;
+    }
+    if (!rotate_applied) return false;
+
+    return true;
+}
+
+bool test_pipeline_edge_cleanup_and_despeckle() {
+    using namespace ppp::core;
+
+    // Create BW1 image filled with foreground.
+    Image img(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0xFF);
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+
+    // Enable edge cleanup (10px from each edge, before deskew).
+    profile.edge_cleanup.enabled = true;
+    profile.edge_cleanup.order = EdgeCleanupOrder::BeforeDeskew;
+    profile.edge_cleanup.set1.top = {10.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.bottom = {10.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.left = {10.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.right = {10.0, MeasurementUnit::Pixels};
+
+    // Enable single-pixel despeckle.
+    profile.despeckle.mode = DespeckleMode::SinglePixel;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) return false;
+
+    // Border should be cleared.
+    if (result.image.get_bw_pixel(0, 0) != 0) return false;
+    if (result.image.get_bw_pixel(5, 5) != 0) return false;
+    // Interior should remain.
+    if (result.image.get_bw_pixel(50, 50) != 1) return false;
+
+    // Check steps were applied.
+    int applied_count = 0;
+    for (const auto& s : result.steps) {
+        if (s.applied) ++applied_count;
+    }
+    if (applied_count < 2) return false;  // At least edge_cleanup and despeckle.
+
+    return true;
+}
+
+bool test_pipeline_full_with_margins() {
+    using namespace ppp::core;
+
+    // Create a BW1 image with a block of content.
+    Image img(200, 150, PixelFormat::BW1, 300.0, 300.0);
+    for (int y = 30; y < 100; ++y)
+        for (int x = 40; x < 160; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    ProcessingProfile profile;
+    profile.position_image = true;
+    profile.canvas.preset = CanvasPreset::Custom;
+    profile.canvas.width = {300.0, MeasurementUnit::Pixels};
+    profile.canvas.height = {200.0, MeasurementUnit::Pixels};
+    profile.canvas.orientation = Orientation::Landscape;
+    profile.margins[0].center_horizontal = true;
+    profile.margins[0].center_vertical = true;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) { std::cerr << "pipeline failed: " << result.error << std::endl; return false; }
+
+    // Output should be 300x200 (the custom canvas).
+    if (result.image.width() != 300 || result.image.height() != 200) {
+        std::cerr << "output size: " << result.image.width() << "x" << result.image.height() << std::endl;
+        return false;
+    }
+
+    // Subimage should have been detected.
+    if (result.subimage_bounds.empty()) return false;
+
+    // Check that margins step was applied.
+    bool margins_applied = false;
+    for (const auto& s : result.steps) {
+        if (s.name == "margins" && s.applied) margins_applied = true;
+    }
+    if (!margins_applied) return false;
+
+    return true;
+}
+
+bool test_pipeline_odd_even_pages() {
+    using namespace ppp::core;
+
+    Image img(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    img.fill(0xFF);  // All foreground.
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+    profile.odd_even_mode = true;
+
+    // Set 1 (odd pages): clean 5px from edges.
+    profile.edge_cleanup.enabled = true;
+    profile.edge_cleanup.set1.top = {5.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.bottom = {5.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.left = {5.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set1.right = {5.0, MeasurementUnit::Pixels};
+
+    // Set 2 (even pages): clean 20px from edges.
+    profile.edge_cleanup.set2.top = {20.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set2.bottom = {20.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set2.left = {20.0, MeasurementUnit::Pixels};
+    profile.edge_cleanup.set2.right = {20.0, MeasurementUnit::Pixels};
+
+    // Page 0 (odd) — 5px cleanup.
+    auto r0 = run_pipeline(img, profile, 0);
+    if (!r0.success) return false;
+    if (r0.image.get_bw_pixel(3, 3) != 0) return false;    // Inside 5px border.
+    if (r0.image.get_bw_pixel(10, 10) != 1) return false;   // Outside 5px border.
+
+    // Page 1 (even) — 20px cleanup.
+    Image img2(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    img2.fill(0xFF);
+    auto r1 = run_pipeline(img2, profile, 1);
+    if (!r1.success) return false;
+    if (r1.image.get_bw_pixel(15, 15) != 0) return false;   // Inside 20px border.
+    if (r1.image.get_bw_pixel(50, 50) != 1) return false;   // Outside 20px border.
+
+    return true;
+}
+
+bool test_pipeline_run_step() {
+    using namespace ppp::core;
+
+    Image img(100, 50, PixelFormat::Gray8, 300.0, 300.0);
+
+    ProcessingProfile profile;
+    profile.rotation = Rotation::R180;
+
+    auto result = run_step(img, profile, "rotate");
+    if (!result.success) return false;
+    if (result.image.width() != 100 || result.image.height() != 50) return false;
+    if (result.steps.size() != 1) return false;
+    if (result.steps[0].name != "rotate" || !result.steps[0].applied) return false;
+
+    // Unknown step.
+    auto bad = run_step(img, profile, "nonexistent");
+    if (bad.success) return false;
+
+    return true;
+}
+
+bool test_pipeline_step_log_detail() {
+    using namespace ppp::core;
+
+    Image img(100, 100, PixelFormat::BW1, 300.0, 300.0);
+    for (int y = 30; y < 70; ++y)
+        for (int x = 20; x < 80; ++x)
+            img.set_bw_pixel(x, y, 1);
+
+    ProcessingProfile profile;
+    profile.position_image = false;
+    profile.despeckle.mode = DespeckleMode::Object;
+    profile.despeckle.object_min = 1;
+    profile.despeckle.object_max = 3;
+
+    auto result = run_pipeline(img, profile);
+    if (!result.success) return false;
+
+    // Check that step details contain useful text.
+    for (const auto& s : result.steps) {
+        if (s.name == "detect_subimage") {
+            if (s.detail.find("content at") == std::string::npos) {
+                std::cerr << "detect_subimage detail: " << s.detail << std::endl;
+                return false;
+            }
+        }
+        if (s.name == "despeckle" && s.applied) {
+            if (s.detail.find("removed objects") == std::string::npos) {
+                std::cerr << "despeckle detail: " << s.detail << std::endl;
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -3371,6 +3614,14 @@ int main() {
         {"ops_canvas_resolution", test_ops_canvas_resolution},
         {"ops_apply_margins", test_ops_apply_margins},
         {"ops_apply_margins_centered", test_ops_apply_margins_centered},
+        {"pipeline_empty_image", test_pipeline_empty_image},
+        {"pipeline_passthrough", test_pipeline_passthrough},
+        {"pipeline_rotation", test_pipeline_rotation},
+        {"pipeline_edge_cleanup_and_despeckle", test_pipeline_edge_cleanup_and_despeckle},
+        {"pipeline_full_with_margins", test_pipeline_full_with_margins},
+        {"pipeline_odd_even_pages", test_pipeline_odd_even_pages},
+        {"pipeline_run_step", test_pipeline_run_step},
+        {"pipeline_step_log_detail", test_pipeline_step_log_detail},
     };
 #if PPP_CORE_HAVE_SQLITE
     tests.emplace_back("sqlite_repository_persistence", test_sqlite_repository_persistence);

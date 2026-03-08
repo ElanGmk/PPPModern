@@ -1,0 +1,321 @@
+#include "ppp/core/processing_pipeline.h"
+
+#include <sstream>
+
+namespace ppp::core {
+
+namespace {
+
+// Helper: select odd or even config set based on page index.
+// Index 0 = first page (odd), index 1 = second page (even), etc.
+// If odd_even_mode is disabled, always use set 0.
+std::size_t page_set(std::size_t page_index, bool odd_even_mode) {
+    if (!odd_even_mode) return 0;
+    return (page_index % 2 == 0) ? 0 : 1;  // 0-based: even index = odd page.
+}
+
+ProcessingStep step_rotate(Image& img, Rotation rotation) {
+    ProcessingStep step{"rotate", false, ""};
+
+    switch (rotation) {
+        case Rotation::None:
+            step.detail = "no rotation";
+            return step;
+        case Rotation::CW90:
+            img = img.rotate_cw90();
+            step.applied = true;
+            step.detail = "rotated CW 90 degrees";
+            break;
+        case Rotation::CCW90:
+            img = img.rotate_ccw90();
+            step.applied = true;
+            step.detail = "rotated CCW 90 degrees";
+            break;
+        case Rotation::R180:
+            img = img.rotate_180();
+            step.applied = true;
+            step.detail = "rotated 180 degrees";
+            break;
+    }
+
+    return step;
+}
+
+ProcessingStep step_edge_cleanup(Image& img, const EdgeCleanupConfig& config,
+                                  std::size_t page_index, bool odd_even) {
+    ProcessingStep step{"edge_cleanup", false, ""};
+
+    if (!config.enabled) {
+        step.detail = "disabled";
+        return step;
+    }
+
+    auto set_idx = page_set(page_index, odd_even);
+    const auto& edges = (set_idx == 0) ? config.set1 : config.set2;
+
+    ops::edge_cleanup(img, edges, img.dpi_x(), img.dpi_y());
+    step.applied = true;
+
+    std::ostringstream oss;
+    oss << "cleaned edges (set " << (set_idx + 1) << ")";
+    step.detail = oss.str();
+
+    return step;
+}
+
+ProcessingStep step_hole_cleanup(Image& img, const HoleCleanupConfig& config,
+                                  std::size_t page_index, bool odd_even) {
+    ProcessingStep step{"hole_cleanup", false, ""};
+
+    if (!config.enabled) {
+        step.detail = "disabled";
+        return step;
+    }
+
+    // Need BW1 for hole cleanup.
+    if (img.format() != PixelFormat::BW1) {
+        step.detail = "skipped (not BW1)";
+        return step;
+    }
+
+    auto set_idx = page_set(page_index, odd_even);
+    const auto& edges = (set_idx == 0) ? config.set1 : config.set2;
+
+    ops::hole_cleanup(img, edges, img.dpi_x(), img.dpi_y());
+    step.applied = true;
+
+    std::ostringstream oss;
+    oss << "cleaned punch holes (set " << (set_idx + 1) << ")";
+    step.detail = oss.str();
+
+    return step;
+}
+
+ProcessingStep step_despeckle(Image& img, const DespeckleConfig& config) {
+    ProcessingStep step{"despeckle", false, ""};
+
+    if (config.mode == DespeckleMode::None) {
+        step.detail = "disabled";
+        return step;
+    }
+
+    if (img.format() != PixelFormat::BW1) {
+        step.detail = "skipped (not BW1)";
+        return step;
+    }
+
+    ops::despeckle(img, config);
+    step.applied = true;
+
+    if (config.mode == DespeckleMode::SinglePixel) {
+        step.detail = "removed single-pixel noise";
+    } else {
+        std::ostringstream oss;
+        oss << "removed objects " << config.object_min << "-" << config.object_max << " px";
+        step.detail = oss.str();
+    }
+
+    return step;
+}
+
+ProcessingStep step_detect_subimage(const Image& img, const SubimageConfig& config,
+                                     ops::SubimageResult& out_result) {
+    ProcessingStep step{"detect_subimage", true, ""};
+
+    out_result = ops::detect_subimage(img, config, img.dpi_x(), img.dpi_y());
+
+    std::ostringstream oss;
+    if (out_result.bounds.empty()) {
+        oss << "no content detected";
+    } else {
+        oss << "content at (" << out_result.bounds.left << ","
+            << out_result.bounds.top << ") "
+            << out_result.bounds.width() << "x"
+            << out_result.bounds.height() << " px";
+        if (out_result.too_small) oss << " (too small)";
+        oss << ", " << out_result.components.size() << " components";
+    }
+    step.detail = oss.str();
+
+    return step;
+}
+
+ProcessingStep step_margins(Image& img, const geometry::Rect& subimage_bounds,
+                             const ProcessingProfile& profile,
+                             std::size_t page_index,
+                             const ops::CanvasDimensions& canvas,
+                             geometry::Rect& out_content_rect) {
+    ProcessingStep step{"margins", false, ""};
+
+    if (!profile.position_image) {
+        step.detail = "positioning disabled";
+        return step;
+    }
+
+    auto set_idx = page_set(page_index, profile.odd_even_mode);
+    const auto& margins = profile.margins[set_idx];
+
+    auto result = ops::apply_margins(
+        img, subimage_bounds, margins,
+        canvas.width, canvas.height,
+        profile.keep_outside_subimage,
+        img.dpi_x(), img.dpi_y());
+
+    img = std::move(result.image);
+    out_content_rect = result.content_rect;
+    step.applied = true;
+
+    std::ostringstream oss;
+    oss << "positioned content at (" << out_content_rect.left << ","
+        << out_content_rect.top << ") on "
+        << canvas.width << "x" << canvas.height << " canvas";
+    step.detail = oss.str();
+
+    return step;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Full pipeline
+// ---------------------------------------------------------------------------
+
+ProcessingResult run_pipeline(const Image& image,
+                              const ProcessingProfile& profile,
+                              std::size_t page_index) {
+    ProcessingResult result;
+
+    if (image.empty()) {
+        result.success = false;
+        result.error = "empty source image";
+        return result;
+    }
+
+    // Work on a mutable copy.
+    Image img = image;
+
+    // Ensure DPI is set (use detected or default 300).
+    if (img.dpi_x() <= 0 || img.dpi_y() <= 0) {
+        double dpi = (profile.detected_dpi > 0) ? static_cast<double>(profile.detected_dpi) : 300.0;
+        img.set_dpi(dpi, dpi);
+    }
+
+    // 1. Rotation.
+    result.steps.push_back(step_rotate(img, profile.rotation));
+
+    // 2. Edge cleanup (before deskew).
+    if (profile.edge_cleanup.order == EdgeCleanupOrder::BeforeDeskew) {
+        result.steps.push_back(step_edge_cleanup(
+            img, profile.edge_cleanup, page_index, profile.odd_even_mode));
+    }
+
+    // 3. Deskew (not yet implemented).
+    if (profile.deskew.enabled) {
+        result.steps.push_back({"deskew", false, "not yet implemented"});
+    }
+
+    // 4. Hole cleanup.
+    result.steps.push_back(step_hole_cleanup(
+        img, profile.hole_cleanup, page_index, profile.odd_even_mode));
+
+    // 5. Despeckle.
+    result.steps.push_back(step_despeckle(img, profile.despeckle));
+
+    // 6. Edge cleanup (after deskew).
+    if (profile.edge_cleanup.order == EdgeCleanupOrder::AfterDeskew) {
+        result.steps.push_back(step_edge_cleanup(
+            img, profile.edge_cleanup, page_index, profile.odd_even_mode));
+    }
+
+    // 7. Subimage detection.
+    ops::SubimageResult subimage_result;
+    result.steps.push_back(step_detect_subimage(img, profile.subimage, subimage_result));
+    result.subimage_bounds = subimage_result.bounds;
+
+    // If no content detected, use the full image as the subimage.
+    if (result.subimage_bounds.empty()) {
+        result.subimage_bounds = {0, 0, img.width(), img.height()};
+    }
+
+    // 8. Canvas resolution.
+    result.canvas = ops::resolve_canvas(
+        profile.canvas, img.dpi_x(), img.dpi_y(), img.width(), img.height());
+
+    // 9. Margin application / content positioning.
+    geometry::Rect content_rect;
+    result.steps.push_back(step_margins(
+        img, result.subimage_bounds, profile, page_index,
+        result.canvas, content_rect));
+
+    // 10. Resize (not yet implemented).
+    if (profile.resize.enabled) {
+        result.steps.push_back({"resize", false, "not yet implemented"});
+    }
+
+    result.image = std::move(img);
+    result.success = true;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Single-step execution
+// ---------------------------------------------------------------------------
+
+ProcessingResult run_step(const Image& image,
+                          const ProcessingProfile& profile,
+                          const std::string& step_name,
+                          std::size_t page_index) {
+    ProcessingResult result;
+
+    if (image.empty()) {
+        result.success = false;
+        result.error = "empty source image";
+        return result;
+    }
+
+    Image img = image;
+    if (img.dpi_x() <= 0 || img.dpi_y() <= 0) {
+        double dpi = (profile.detected_dpi > 0) ? static_cast<double>(profile.detected_dpi) : 300.0;
+        img.set_dpi(dpi, dpi);
+    }
+
+    if (step_name == "rotate") {
+        result.steps.push_back(step_rotate(img, profile.rotation));
+    } else if (step_name == "edge_cleanup") {
+        result.steps.push_back(step_edge_cleanup(
+            img, profile.edge_cleanup, page_index, profile.odd_even_mode));
+    } else if (step_name == "hole_cleanup") {
+        result.steps.push_back(step_hole_cleanup(
+            img, profile.hole_cleanup, page_index, profile.odd_even_mode));
+    } else if (step_name == "despeckle") {
+        result.steps.push_back(step_despeckle(img, profile.despeckle));
+    } else if (step_name == "detect_subimage") {
+        ops::SubimageResult sub;
+        result.steps.push_back(step_detect_subimage(img, profile.subimage, sub));
+        result.subimage_bounds = sub.bounds;
+    } else if (step_name == "margins") {
+        // Need subimage detection first for margins.
+        ops::SubimageResult sub;
+        step_detect_subimage(img, profile.subimage, sub);
+        result.subimage_bounds = sub.bounds;
+        if (result.subimage_bounds.empty()) {
+            result.subimage_bounds = {0, 0, img.width(), img.height()};
+        }
+        result.canvas = ops::resolve_canvas(
+            profile.canvas, img.dpi_x(), img.dpi_y(), img.width(), img.height());
+        geometry::Rect content_rect;
+        result.steps.push_back(step_margins(
+            img, result.subimage_bounds, profile, page_index,
+            result.canvas, content_rect));
+    } else {
+        result.success = false;
+        result.error = "unknown step: " + step_name;
+        return result;
+    }
+
+    result.image = std::move(img);
+    result.success = true;
+    return result;
+}
+
+} // namespace ppp::core
