@@ -3243,6 +3243,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         if (!state) break;
         {
+            // Don't intercept arrow/nav keys when a child control (ListView, Edit, etc.) has focus.
+            HWND focused = GetFocus();
+            bool child_has_focus = focused && focused != hwnd &&
+                focused != state->hwnd_image_panel &&
+                IsChild(hwnd, focused);
+
             bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             int scroll_step = shift ? 100 : 30;  // Shift = fast scroll
@@ -3272,44 +3278,58 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
 
-            // --- Page navigation ---
+            // --- Navigation / scrolling: only when no child control has focus ---
             case VK_NEXT:   // Page Down
-                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
-                return 0;
+                if (!child_has_focus) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
+                    return 0;
+                }
+                break;
             case VK_PRIOR:  // Page Up
-                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
-                return 0;
-            case VK_HOME:
-                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_FIRST, 0);
-                return 0;
-            case VK_END:
-                SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_LAST, 0);
-                return 0;
-
-            // --- Arrow key scrolling ---
-            case VK_UP:
-                if (ctrl) {
-                    // Ctrl+Up = previous page
+                if (!child_has_focus) {
                     SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
-                } else {
+                    return 0;
+                }
+                break;
+            case VK_HOME:
+                if (!child_has_focus) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_FIRST, 0);
+                    return 0;
+                }
+                break;
+            case VK_END:
+                if (!child_has_focus) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_LAST, 0);
+                    return 0;
+                }
+                break;
+
+            // --- Arrow key scrolling (only when no child has focus) ---
+            case VK_UP:
+                if (child_has_focus) break;
+                if (ctrl)
+                    SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_PREV, 0);
+                else {
                     state->scroll_y = std::max(0, state->scroll_y - scroll_step);
                     InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
                 }
                 return 0;
             case VK_DOWN:
-                if (ctrl) {
-                    // Ctrl+Down = next page
+                if (child_has_focus) break;
+                if (ctrl)
                     SendMessageW(hwnd, WM_COMMAND, IDM_VIEW_NEXT, 0);
-                } else {
+                else {
                     state->scroll_y += scroll_step;
                     InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
                 }
                 return 0;
             case VK_LEFT:
+                if (child_has_focus) break;
                 state->scroll_x = std::max(0, state->scroll_x - scroll_step);
                 InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
                 return 0;
             case VK_RIGHT:
+                if (child_has_focus) break;
                 state->scroll_x += scroll_step;
                 InvalidateRect(state->hwnd_image_panel, nullptr, FALSE);
                 return 0;
@@ -3336,10 +3356,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 break;
 
-            // --- Delete page ---
+            // --- Delete page (only when no child has focus) ---
             case VK_DELETE:
-                SendMessageW(hwnd, WM_COMMAND, IDM_IMAGE_DELETE_PAGE, 0);
-                return 0;
+                if (!child_has_focus) {
+                    SendMessageW(hwnd, WM_COMMAND, IDM_IMAGE_DELETE_PAGE, 0);
+                    return 0;
+                }
+                break;
             }
         }
         break;
