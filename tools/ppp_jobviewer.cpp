@@ -877,7 +877,40 @@ void update_statusbar(AppState& state) {
 // Image display panel (custom child window)
 // ---------------------------------------------------------------------------
 
+constexpr wchar_t kTabPageClass[] = L"PPPTabPage";
 constexpr wchar_t kImagePanelClass[] = L"PPPImagePanel";
+
+// Tab page container: forwards WM_COMMAND and WM_NOTIFY to the top-level main window.
+LRESULT CALLBACK TabPageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_COMMAND:
+    case WM_NOTIFY: {
+        // Walk up to the top-level window and forward the message.
+        HWND top = hwnd;
+        while (HWND parent = GetParent(top))
+            top = parent;
+        return SendMessageW(top, msg, wp, lp);
+    }
+    case WM_ERASEBKGND: {
+        HDC hdc = reinterpret_cast<HDC>(wp);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
+        return 1;
+    }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void register_tab_page_class(HINSTANCE hinstance) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = TabPageProc;
+    wc.hInstance = hinstance;
+    wc.lpszClassName = kTabPageClass;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    RegisterClassW(&wc);
+}
 
 void register_image_panel_class(HINSTANCE hinstance) {
     WNDCLASSW wc{};
@@ -925,11 +958,11 @@ void create_main_tabs(AppState& state) {
                      reinterpret_cast<LPARAM>(&item));
     }
 
-    // Create container panels for each tab (static windows as parents).
+    // Create container panels for each tab (custom class that forwards WM_COMMAND).
     for (int i = 0; i < 5; ++i) {
         state.hwnd_tab_pages[i] = CreateWindowExW(
-            0, L"STATIC", nullptr,
-            WS_CHILD | WS_CLIPCHILDREN | SS_OWNERDRAW,
+            0, kTabPageClass, nullptr,
+            WS_CHILD | WS_CLIPCHILDREN,
             0, 0, 100, 100, state.hwnd_main_tab,
             nullptr, state.hinstance, nullptr);
     }
@@ -1067,8 +1100,8 @@ void create_tab_job_setup(AppState& state) {
 
     // --- Selected files panel: buttons LEFT, list RIGHT (legacy layout) ---
     state.hwnd_js_selected_panel = CreateWindowExW(
-        0, L"STATIC", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | SS_OWNERDRAW,
+        0, kTabPageClass, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
         2, 4, 450, 250, state.hwnd_js_sub_tab,
         nullptr, inst, nullptr);
 
@@ -1109,8 +1142,8 @@ void create_tab_job_setup(AppState& state) {
 
     // --- Batch parameters panel (child of sub-tab, initially hidden) ---
     state.hwnd_js_batch_panel = CreateWindowExW(
-        0, L"STATIC", nullptr,
-        WS_CHILD | WS_CLIPCHILDREN | SS_OWNERDRAW,
+        0, kTabPageClass, nullptr,
+        WS_CHILD | WS_CLIPCHILDREN,
         2, 4, 450, 250, state.hwnd_js_sub_tab,
         nullptr, inst, nullptr);
 
@@ -3278,12 +3311,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------------------------------------------------------------------
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
+    // Initialize COM (needed for SHBrowseForFolder with BIF_NEWDIALOGSTYLE).
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     // Initialize common controls.
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_BAR_CLASSES | ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icc);
 
+    register_tab_page_class(instance);
     register_image_panel_class(instance);
 
     constexpr wchar_t kWindowClassName[] = L"PPPJobViewerMainWindow";
