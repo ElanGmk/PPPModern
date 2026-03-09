@@ -2878,7 +2878,56 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch_js_sub_tab(*state, sel);
         }
 
-        // Double-click on file list → navigate dir or preview image.
+        // Single-click selection on file list → preview image in viewer.
+        if (hdr->hwndFrom == state->hwnd_js_file_list && hdr->code == LVN_ITEMCHANGED) {
+            auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lp);
+            // Only react when an item becomes selected (not deselected).
+            if ((nmlv->uNewState & LVIS_SELECTED) && !(nmlv->uOldState & LVIS_SELECTED)) {
+                int sel = nmlv->iItem;
+                wchar_t buf[MAX_PATH];
+                LVITEMW item{};
+                item.mask = LVIF_TEXT;
+                item.iItem = sel;
+                item.iSubItem = 0;
+                item.pszText = buf;
+                item.cchTextMax = MAX_PATH;
+                SendMessageW(state->hwnd_js_file_list, LVM_GETITEMTEXTW, sel,
+                             reinterpret_cast<LPARAM>(&item));
+                std::wstring name(buf);
+                // Skip directories (wrapped in []).
+                if (!(name.size() > 2 && name.front() == L'[' && name.back() == L']')) {
+                    auto path = state->browse_dir / name;
+                    auto ext = to_lower(path.extension().string());
+                    state->entries.clear();
+                    state->current_index = -1;
+                    state->showing_processed = false;
+                    state->current_file = path;
+                    std::size_t pages = 1;
+                    if (ext == ".tif" || ext == ".tiff") {
+                        pages = count_tiff_pages(path);
+                        if (pages == 0) pages = 1;
+                    }
+                    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                    for (std::size_t pg = 0; pg < pages; ++pg) {
+                        auto img = load_image_file(path, pg);
+                        if (img.empty()) break;
+                        ImageEntry entry;
+                        entry.source_path = path;
+                        entry.page_index = pg;
+                        entry.original = std::move(img);
+                        state->entries.push_back(std::move(entry));
+                    }
+                    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                    if (!state->entries.empty()) {
+                        state->current_index = 0;
+                        state->fit_mode = true;
+                        update_display(*state);
+                    }
+                }
+            }
+        }
+
+        // Double-click on file list → navigate dir (files already load on click).
         if (hdr->hwndFrom == state->hwnd_js_file_list && hdr->code == NM_DBLCLK) {
             handle_file_list_dblclick(*state);
         }
