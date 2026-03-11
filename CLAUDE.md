@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PPP Modern is a C++20 job management core library (`ppp_core`) being extracted from a legacy VCL application. It provides job lifecycle management, persistence, scheduling, and a CLI tool (`ppp_jobctl`). Targets both Windows (MSVC) and Linux (GCC/Ninja).
+PPP Modern is a C++20 core library (`ppp_core`) being extracted from a legacy VCL application. It provides two main domains: **job queue management** (lifecycle, persistence, scheduling) and an **image processing pipeline** (TIFF/PDF transformation). Targets both Windows (MSVC) and Linux (GCC/Ninja).
 
 ## Build Commands
 
@@ -31,13 +31,15 @@ ctest --test-dir build -C Debug
 
 **Makefile shortcuts (WSL):** `make configure && make build && make test`
 
-**Format:** `clang-format -i <files>` (config in `.clang-format`, LLVM-based)
+**Format all sources:** `make fmt` (or `clang-format -i <files>` for specific files; config in `.clang-format`, LLVM-based)
+
+**Fetch vendored SQLite:** `make vendor-sqlite` (populates `third_party/sqlite/` for `PPP_SQLITE_VENDOR=ON`)
 
 ## CMake Options
 
 | Option | Default | Purpose |
 |---|---|---|
-| `PPP_BUILD_TOOLS` | ON | Build `ppp_jobctl` CLI and `ppp_jobviewer` (Win32) |
+| `PPP_BUILD_TOOLS` | ON | Build `ppp_jobctl` CLI, `ppp_batch` CLI, and `ppp_jobviewer` Win32 GUI |
 | `PPP_BUILD_TESTS` | ON | Build test executable, enables CTest |
 | `PPP_ENABLE_SQLITE` | ON | SQLite repository backend |
 | `PPP_ENABLE_SQLSERVER` | OFF | SQL Server repository via ODBC |
@@ -65,11 +67,19 @@ All repositories use the pimpl pattern (`struct Impl`).
 
 **Serialization** (`include/ppp/core/job_serialization.h`): JSON serialization for jobs (used by export/import commands).
 
+**Image processing pipeline** (`include/ppp/core/processing_pipeline.h`, `processing_config.h`): Orchestrates image transformations (deskew, despeckle, resize, edge cleanup, color dropout) on in-memory `Image` objects. Reads/writes TIFF, BMP, and PDF via format-specific writers. Processing parameters loaded from JSON config files (see `test2/default_profile.json` for schema).
+
 **CLI** (`tools/ppp_jobctl.cpp`): Feature-rich CLI exercising all service operations. Repository selection order: SQL Server → SQLite → File → in-memory.
+
+**Batch tool** (`tools/ppp_batch.cpp`): Drives the image processing pipeline from the command line; also used by regression tests.
 
 ## Testing
 
-Tests are in `tests/` using a custom lightweight assertion framework (no external test library). Registered via CTest. Run a single test with `ctest --test-dir build -R <test_name>`.
+Two CTest targets:
+- `ppp_core_tests` — unit tests for job lifecycle and all repository backends (custom assertion framework, no external library)
+- `ppp_regression_tests` — image pipeline validation; runs `ppp_batch` on TIFF inputs from `test2/in/` and compares against baselines in `tests/regression/baselines/`
+
+Run a single test with `ctest --test-dir build -R <test_name>`.
 
 ## Code Style
 
