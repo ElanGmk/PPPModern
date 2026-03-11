@@ -28,12 +28,14 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 
 #pragma comment(lib, "comctl32.lib")
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <iomanip>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -92,6 +94,10 @@ enum ControlId : UINT {
     IDM_IMAGE_ROTATE_CCW,
     IDM_IMAGE_ROTATE_180,
     IDM_IMAGE_DELETE_PAGE,
+    // Windows / QC
+    IDM_SHOW_EXCEPTION_LIST,
+    IDM_SHOW_GOOD_FILES_LIST,
+    IDM_SHOW_INVESTIGATE,
     // Help
     IDM_HELP_ABOUT,
 
@@ -117,6 +123,10 @@ enum ControlId : UINT {
     IDC_JS_SAVE_LIST_BTN,
     IDC_JS_LOAD_LIST_BTN,
     IDC_JS_PROCESS_BTN,
+    // QC buttons in selected files panel
+    IDC_JS_EXCEPTION_LIST_BTN,
+    IDC_JS_GOOD_FILES_BTN,
+    IDC_JS_INVESTIGATE_BTN,
     // Batch params sub-tab
     IDC_JS_OUTDIR_CHECK,
     IDC_JS_OUTDIR_COMBO,
@@ -234,11 +244,27 @@ enum ControlId : UINT {
     IDC_RS_ALLOW_INCREASE,
     IDC_RS_ANTIALIAS,
 
-    // --- Exception List ---
+    // --- Investigation panel ---
+    IDC_INVEST_STEPS = 2580,
+    IDC_INVEST_REPROCESS_BTN,
+    IDC_INVEST_BACK_BTN,
+
+    // --- Inline exception list (bottom of image panel) ---
     IDC_EX_LIST = 2600,
-    IDC_EX_INVESTIGATE_BTN,
-    IDC_EX_REPROCESS_BTN,
-    IDC_EX_DELETE_BTN,
+
+    // --- Exception List / Good Files List popup windows ---
+    IDC_QC_FILE_LIST = 2700,   // Listbox in QC window
+    IDC_QC_PREVIEW_TAB,        // Input/Output Overview tab
+    IDC_QC_INVESTIGATE_BTN,
+    IDC_QC_REPROCESS_BTN,
+    IDC_QC_FIX_MARGINS_BTN,
+    IDC_QC_VIEW_BTN,
+    IDC_QC_EDIT_BTN,
+    IDC_QC_TO_MAIN_BTN,
+    IDC_QC_TO_OTHER_BTN,       // To EL or To GFL
+    IDC_QC_RESUBMIT_ALL_BTN,
+    IDC_QC_DELETE_BTN,
+    IDC_QC_HELP_BTN,
 };
 
 // ---------------------------------------------------------------------------
@@ -339,8 +365,12 @@ struct AppState {
     // --- Page Setup (Tab 2) controls ---
     // (will be populated when Tab 2 is built)
 
-    // --- Exception list (bottom of image panel) ---
+    // --- Exception list (bottom of image panel, inline) ---
     HWND hwnd_exception_list{};
+
+    // --- QC popup windows (Exception List / Good Files List) ---
+    HWND hwnd_qc_exception{};   // Exception List popup window
+    HWND hwnd_qc_goodfiles{};   // Good Files List popup window
 
     // Image state
     std::vector<ImageEntry> entries;
@@ -365,9 +395,53 @@ struct AppState {
     fs::path profile_path;
     std::vector<fs::path> selected_files;  // Files selected for batch
 
+    // Investigation mode
+    bool investigate_mode{false};
+    HWND hwnd_invest_panel{};    // Investigation info panel (bottom-left)
+    HWND hwnd_invest_steps{};    // ListView of processing steps
+    HWND hwnd_invest_reprocess{}; // Re-process button
+    HWND hwnd_invest_back{};     // Back button
+
     // Active tab
     int active_tab{kTabJobSetup};
     int active_js_sub_tab{kJobSubSelected};
+};
+
+// ---------------------------------------------------------------------------
+// QC List Window state — shared by Exception List and Good Files List
+// ---------------------------------------------------------------------------
+
+struct QcEntry {
+    fs::path source_path;
+    std::string reason;          // Exception reason (empty for good files)
+    Image original;
+    std::optional<Image> processed;
+    std::optional<ProcessingResult> result;
+};
+
+enum class QcWindowKind { ExceptionList, GoodFilesList };
+
+struct QcWindowState {
+    QcWindowKind kind{};
+    AppState* app{};             // Back-pointer to main app state
+    std::vector<QcEntry> items;
+    int selected_index{-1};
+    bool showing_output{false};  // Input Overview vs Output Overview
+
+    // Window handles
+    HWND hwnd_self{};
+    HWND hwnd_file_list{};       // Listbox
+    HWND hwnd_preview_tab{};     // Input/Output Overview tab
+    HWND hwnd_preview{};         // Static for image preview
+    HWND hwnd_filename{};
+    HWND hwnd_imagetype{};
+    HWND hwnd_imagesize{};
+    HWND hwnd_resolution{};
+
+    // Preview bitmap
+    HBITMAP hbmp_preview{};
+    int bmp_w{0};
+    int bmp_h{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -376,6 +450,7 @@ struct AppState {
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT CALLBACK ImagePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT CALLBACK QcWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 void create_menus(HWND hwnd);
 void create_toolbar(AppState& state);
@@ -408,6 +483,15 @@ void do_remove_selected(AppState& state);
 void do_clear_selected(AppState& state);
 void do_process_current(AppState& state);
 void do_process_all(AppState& state);
+
+void register_qc_window_class(HINSTANCE hinstance);
+HWND create_qc_window(AppState& state, QcWindowKind kind, QcWindowState* qc_state);
+void qc_update_preview(QcWindowState& qc);
+void qc_populate_list(QcWindowState& qc);
+void show_qc_windows(AppState& state);
+void enter_investigate_mode(AppState& state);
+void leave_investigate_mode(AppState& state);
+void update_investigate_steps(AppState& state);
 void do_process_step(AppState& state, const std::string& step_name);
 void do_profile_load(AppState& state);
 void do_profile_save(AppState& state);
@@ -732,6 +816,13 @@ void create_menus(HWND hwnd) {
     AppendMenuW(image_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(image_menu, MF_STRING, IDM_IMAGE_DELETE_PAGE, L"&Delete Page\tDel");
 
+    // Windows menu (QC workflow)
+    HMENU windows_menu = CreatePopupMenu();
+    AppendMenuW(windows_menu, MF_STRING, IDM_SHOW_EXCEPTION_LIST, L"&Exception List...");
+    AppendMenuW(windows_menu, MF_STRING, IDM_SHOW_GOOD_FILES_LIST, L"&Good Files List...");
+    AppendMenuW(windows_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(windows_menu, MF_STRING, IDM_SHOW_INVESTIGATE, L"&Investigation View\tF8");
+
     // Help menu
     HMENU help_menu = CreatePopupMenu();
     AppendMenuW(help_menu, MF_STRING, IDM_HELP_ABOUT, L"&About...");
@@ -741,6 +832,7 @@ void create_menus(HWND hwnd) {
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(process_menu), L"P&rocess");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(image_menu), L"&Image");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(view_menu), L"&View");
+    AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(windows_menu), L"&Windows");
     AppendMenuW(menubar, MF_POPUP, reinterpret_cast<UINT_PTR>(help_menu), L"&Help");
 
     SetMenu(hwnd, menubar);
@@ -1115,11 +1207,18 @@ void create_tab_job_setup(AppState& state) {
         L"&Load", bx, 4 + 2 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_LOAD_LIST_BTN);
     state.hwnd_js_btn_clear = create_button(state.hwnd_js_selected_panel, inst, font,
         L"&Clear", bx, 4 + 3 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_CLEAR_BTN);
+    state.hwnd_js_btn_remove = create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Re&move", bx, 4 + 4 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_REMOVE_BTN);
     // Process button at bottom of button column.
     state.hwnd_js_btn_process = create_button(state.hwnd_js_selected_panel, inst, font,
         L"Process", bx, 4 + 5 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_PROCESS_BTN);
-    state.hwnd_js_btn_remove = create_button(state.hwnd_js_selected_panel, inst, font,
-        L"Re&move", bx, 4 + 4 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_REMOVE_BTN);
+    // QC workflow buttons.
+    create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Exc. List", bx, 4 + 7 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_EXCEPTION_LIST_BTN);
+    create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Good List", bx, 4 + 8 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_GOOD_FILES_BTN);
+    create_button(state.hwnd_js_selected_panel, inst, font,
+        L"Investigate", bx, 4 + 9 * (btn_h + btn_gap), btn_w, btn_h, IDC_JS_INVESTIGATE_BTN);
 
     // Selected files ListView — to the right of the buttons.
     int list_x = bx + btn_w + 8;
@@ -1868,6 +1967,44 @@ void layout_children(AppState& state) {
     RECT js_rc = {0, 0, tab_content_w, tab_content_h};
     layout_tab_job_setup(state, js_rc);
 
+    // Investigation panel: show below tabs on the left side when in investigate mode.
+    int invest_h = 0;
+    if (state.investigate_mode && state.hwnd_invest_panel &&
+        IsWindowVisible(state.hwnd_invest_panel)) {
+        invest_h = 200;
+        // Shrink tab area to make room.
+        int tab_h_adj = avail_h - invest_h;
+        MoveWindow(state.hwnd_main_tab, 0, toolbar_h, tab_width, tab_h_adj, TRUE);
+
+        // Re-calculate tab content area with adjusted height.
+        GetClientRect(state.hwnd_main_tab, &tab_rc);
+        SendMessageW(state.hwnd_main_tab, TCM_ADJUSTRECT, FALSE,
+                     reinterpret_cast<LPARAM>(&tab_rc));
+        tab_content_h = tab_rc.bottom - tab_rc.top;
+        for (int i = 0; i < 5; ++i) {
+            MoveWindow(state.hwnd_tab_pages[i],
+                       tab_rc.left, tab_rc.top,
+                       tab_rc.right - tab_rc.left, tab_content_h, TRUE);
+        }
+        js_rc = {0, 0, tab_rc.right - tab_rc.left, tab_content_h};
+        layout_tab_job_setup(state, js_rc);
+
+        // Investigation panel at the bottom-left.
+        MoveWindow(state.hwnd_invest_panel, 0, toolbar_h + tab_h_adj,
+                   tab_width, invest_h, TRUE);
+
+        // Layout children within invest panel.
+        if (state.hwnd_invest_steps) {
+            MoveWindow(state.hwnd_invest_steps, 4, 24,
+                       tab_width - 8, invest_h - 64, TRUE);
+        }
+        int btn_y = invest_h - 34;
+        if (state.hwnd_invest_reprocess)
+            MoveWindow(state.hwnd_invest_reprocess, 4, btn_y, 110, 28, TRUE);
+        if (state.hwnd_invest_back)
+            MoveWindow(state.hwnd_invest_back, 120, btn_y, 130, 28, TRUE);
+    }
+
     // Image panel fills the right side.
     // If exception list exists, split vertically: image on top, exceptions on bottom.
     int exception_h = 0;
@@ -1947,6 +2084,24 @@ void layout_tab_job_setup(AppState& state, RECT rc) {
 
     MoveWindow(state.hwnd_js_selected_panel, sp_x, sp_y, sp_w, sp_h, TRUE);
     MoveWindow(state.hwnd_js_batch_panel, sp_x, sp_y, sp_w, sp_h, TRUE);
+
+    // Reposition output dir edit + browse button to fill available width.
+    {
+        int btn_sz = 28;
+        int edit_x = 100;
+        int edit_w = sp_w - edit_x - btn_sz - 12;
+        if (edit_w < 60) edit_w = 60;
+        auto h_edit = GetDlgItem(state.hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO);
+        auto h_btn = GetDlgItem(state.hwnd_js_batch_panel, IDC_JS_OUTDIR_BROWSE);
+        if (h_edit) {
+            RECT er;
+            GetWindowRect(h_edit, &er);
+            MapWindowPoints(nullptr, state.hwnd_js_batch_panel, reinterpret_cast<POINT*>(&er), 2);
+            MoveWindow(h_edit, edit_x, er.top, edit_w, er.bottom - er.top, TRUE);
+            if (h_btn)
+                MoveWindow(h_btn, edit_x + edit_w + 4, er.top, btn_sz, er.bottom - er.top, TRUE);
+        }
+    }
 
     // --- Selected files panel layout: buttons LEFT, list RIGHT ---
     int btn_w = 79;
@@ -2169,8 +2324,10 @@ void do_process_current(AppState& state) {
 }
 
 void do_process_all(AppState& state) {
-    // If we have selected files but no entries loaded, load them first.
-    if (state.entries.empty() && !state.selected_files.empty()) {
+    // Always reload from selected_files when they exist.
+    if (!state.selected_files.empty()) {
+        state.entries.clear();
+        state.current_index = -1;
         SetCursor(LoadCursorW(nullptr, IDC_WAIT));
         for (auto& path : state.selected_files) {
             auto ext = to_lower(path.extension().string());
@@ -2198,9 +2355,37 @@ void do_process_all(AppState& state) {
         return;
     }
 
+    // Read output settings from Batch Parameters panel.
+    bool save_to_dir = IsDlgButtonChecked(state.hwnd_js_batch_panel,
+                                           IDC_JS_OUTDIR_CHECK) == BST_CHECKED;
+    fs::path output_dir;
+    if (save_to_dir) {
+        wchar_t dir_buf[MAX_PATH] = {};
+        GetDlgItemTextW(state.hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO,
+                        dir_buf, MAX_PATH);
+        output_dir = dir_buf;
+        if (output_dir.empty()) {
+            MessageBoxW(state.hwnd_main, L"Output directory is empty.",
+                        L"Error", MB_ICONERROR | MB_OK);
+            return;
+        }
+        std::error_code ec;
+        fs::create_directories(output_dir, ec);
+        if (!fs::is_directory(output_dir)) {
+            MessageBoxW(state.hwnd_main,
+                        (L"Cannot create output directory:\n" + output_dir.wstring()).c_str(),
+                        L"Error", MB_ICONERROR | MB_OK);
+            return;
+        }
+    }
+
+    // Read conflict policy.
+    bool overwrite = IsDlgButtonChecked(state.hwnd_js_batch_panel,
+                                        IDC_JS_CONFLICT_OVERWRITE) == BST_CHECKED;
+
     SetCursor(LoadCursorW(nullptr, IDC_WAIT));
 
-    int succeeded = 0, failed = 0;
+    int succeeded = 0, failed = 0, saved = 0;
     for (std::size_t i = 0; i < state.entries.size(); ++i) {
         auto& entry = state.entries[i];
         auto result = run_pipeline(entry.original, state.profile, entry.page_index);
@@ -2210,6 +2395,59 @@ void do_process_all(AppState& state) {
             entry.is_exception = false;
             entry.exception_reason.clear();
             ++succeeded;
+
+            // Save to output directory if configured.
+            if (save_to_dir && entry.processed && !entry.processed->empty()) {
+                auto out_name = entry.source_path.filename();
+                auto out_path = output_dir / out_name;
+
+                // Check conflict.
+                if (fs::exists(out_path) && !overwrite) {
+                    entry.is_exception = true;
+                    entry.exception_reason = "Output file exists: " +
+                        out_path.string();
+                    --succeeded;
+                    ++failed;
+                    continue;
+                }
+
+                // Check if any processing step actually modified the image.
+                bool any_applied = false;
+                if (entry.result) {
+                    for (auto& s : entry.result->steps)
+                        if (s.applied) { any_applied = true; break; }
+                }
+
+                bool write_ok = false;
+                if (!any_applied) {
+                    // No steps modified the image — copy the source file.
+                    std::error_code ec;
+                    fs::copy_file(entry.source_path, out_path,
+                                  fs::copy_options::overwrite_existing, ec);
+                    write_ok = !ec;
+                } else {
+                    // Re-encode the processed image as TIFF.
+                    tiff::WriteOptions opts;
+                    opts.compression = tiff::Compression::Uncompressed;
+                    if (entry.processed->format() == PixelFormat::BW1)
+                        opts.photometric = tiff::Photometric::WhiteIsZero;
+                    else if (entry.processed->format() == PixelFormat::RGB24)
+                        opts.photometric = tiff::Photometric::RGB;
+                    else
+                        opts.photometric = tiff::Photometric::BlackIsZero;
+                    write_ok = tiff::write_tiff(*entry.processed, out_path, opts);
+                }
+
+                if (write_ok) {
+                    ++saved;
+                } else {
+                    entry.is_exception = true;
+                    entry.exception_reason = "Failed to write: " +
+                        out_path.string();
+                    --succeeded;
+                    ++failed;
+                }
+            }
         } else {
             entry.is_exception = true;
             entry.exception_reason = result.error;
@@ -2230,8 +2468,14 @@ void do_process_all(AppState& state) {
     std::wostringstream msg;
     msg << L"Processed " << succeeded << L" of " << state.entries.size()
         << L" pages.";
+    if (save_to_dir)
+        msg << L"\nSaved " << saved << L" files to " << output_dir.wstring();
     if (failed > 0) msg << L"\n" << failed << L" exceptions.";
     MessageBoxW(state.hwnd_main, msg.str().c_str(), L"Batch Complete", MB_OK);
+
+    // Show QC popup windows with results.
+    if (state.hwnd_qc_exception && state.hwnd_qc_goodfiles)
+        show_qc_windows(state);
 }
 
 void do_process_step(AppState& state, const std::string& step_name) {
@@ -2607,18 +2851,32 @@ LRESULT CALLBACK ImagePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
 
     switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;  // Suppress erase — we paint the entire area in WM_PAINT.
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        if (state && state->hbmp_display) {
-            HDC mem_dc = CreateCompatibleDC(hdc);
-            auto old_bmp = SelectObject(mem_dc, state->hbmp_display);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int panel_w = rc.right - rc.left;
+        int panel_h = rc.bottom - rc.top;
 
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int panel_w = rc.right - rc.left;
-            int panel_h = rc.bottom - rc.top;
+        // Double-buffer: paint to off-screen DC, then blit once.
+        HDC buf_dc = CreateCompatibleDC(hdc);
+        HBITMAP buf_bmp = CreateCompatibleBitmap(hdc, panel_w, panel_h);
+        auto old_buf = SelectObject(buf_dc, buf_bmp);
+
+        // Fill background.
+        HBRUSH bg = CreateSolidBrush(RGB(64, 64, 64));
+        RECT buf_rc = {0, 0, panel_w, panel_h};
+        FillRect(buf_dc, &buf_rc, bg);
+        DeleteObject(bg);
+
+        if (state && state->hbmp_display) {
+            HDC mem_dc = CreateCompatibleDC(buf_dc);
+            auto old_bmp = SelectObject(mem_dc, state->hbmp_display);
 
             int dst_w = static_cast<int>(state->bmp_width * state->zoom);
             int dst_h = static_cast<int>(state->bmp_height * state->zoom);
@@ -2627,14 +2885,9 @@ LRESULT CALLBACK ImagePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int offset_x = (dst_w < panel_w) ? (panel_w - dst_w) / 2 : -state->scroll_x;
             int offset_y = (dst_h < panel_h) ? (panel_h - dst_h) / 2 : -state->scroll_y;
 
-            // Fill background.
-            HBRUSH bg = CreateSolidBrush(RGB(64, 64, 64));
-            FillRect(hdc, &rc, bg);
-            DeleteObject(bg);
-
-            SetStretchBltMode(hdc, HALFTONE);
-            SetBrushOrgEx(hdc, 0, 0, nullptr);
-            StretchBlt(hdc, offset_x, offset_y, dst_w, dst_h,
+            SetStretchBltMode(buf_dc, HALFTONE);
+            SetBrushOrgEx(buf_dc, 0, 0, nullptr);
+            StretchBlt(buf_dc, offset_x, offset_y, dst_w, dst_h,
                        mem_dc, 0, 0, state->bmp_width, state->bmp_height, SRCCOPY);
 
             SelectObject(mem_dc, old_bmp);
@@ -2655,17 +2908,18 @@ LRESULT CALLBACK ImagePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             si.nPos = state->scroll_y;
             SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
         } else {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            HBRUSH bg = CreateSolidBrush(RGB(64, 64, 64));
-            FillRect(hdc, &rc, bg);
-            DeleteObject(bg);
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(180, 180, 180));
+            SetBkMode(buf_dc, TRANSPARENT);
+            SetTextColor(buf_dc, RGB(180, 180, 180));
             auto msg_text = L"Open an image file (Ctrl+O)";
-            DrawTextW(hdc, msg_text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(buf_dc, msg_text, -1, &buf_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
+
+        // Single blit to screen - no flicker.
+        BitBlt(hdc, 0, 0, panel_w, panel_h, buf_dc, 0, 0, SRCCOPY);
+
+        SelectObject(buf_dc, old_buf);
+        DeleteObject(buf_bmp);
+        DeleteDC(buf_dc);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -2744,6 +2998,890 @@ LRESULT CALLBACK ImagePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---------------------------------------------------------------------------
+// QC popup windows (Exception List / Good Files List)
+// ---------------------------------------------------------------------------
+
+constexpr wchar_t kQcWindowClass[] = L"PPPQcListWindow";
+
+void register_qc_window_class(HINSTANCE hinstance) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = QcWindowProc;
+    wc.hInstance = hinstance;
+    wc.lpszClassName = kQcWindowClass;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    RegisterClassW(&wc);
+}
+
+// Format image type string matching legacy format (e.g. "TIFF G4").
+std::wstring qc_image_type_str(const fs::path& path, const Image& img) {
+    auto ext = to_lower(path.extension().string());
+    std::wstring type;
+    if (ext == ".tif" || ext == ".tiff") {
+        type = L"TIFF";
+        if (img.format() == PixelFormat::BW1) type += L" G4";
+        else if (img.format() == PixelFormat::Gray8) type += L" Gray";
+        else if (img.format() == PixelFormat::RGB24) type += L" RGB";
+    } else if (ext == ".png") {
+        type = L"PNG";
+    } else if (ext == ".bmp") {
+        type = L"BMP";
+    } else if (ext == ".jpg" || ext == ".jpeg") {
+        type = L"JPEG";
+    } else {
+        type = L"Unknown";
+    }
+    return type;
+}
+
+// Format image size as inches (e.g. 6" x 9").
+std::wstring qc_image_size_str(const Image& img) {
+    if (img.empty()) return L"Unknown";
+    double dpi_x = img.dpi_x() > 0 ? img.dpi_x() : 300.0;
+    double dpi_y = img.dpi_y() > 0 ? img.dpi_y() : 300.0;
+    double w_in = img.width() / dpi_x;
+    double h_in = img.height() / dpi_y;
+    std::wostringstream ss;
+    ss << std::fixed;
+    // Use integer display if close to whole number.
+    if (std::abs(w_in - std::round(w_in)) < 0.05)
+        ss << static_cast<int>(std::round(w_in));
+    else
+        ss << std::setprecision(1) << w_in;
+    ss << L"\" x ";
+    if (std::abs(h_in - std::round(h_in)) < 0.05)
+        ss << static_cast<int>(std::round(h_in));
+    else
+        ss << std::setprecision(1) << h_in;
+    ss << L"\"";
+    return ss.str();
+}
+
+std::wstring qc_resolution_str(const Image& img) {
+    if (img.empty()) return L"Unknown";
+    int dpi = static_cast<int>(img.dpi_x());
+    if (dpi <= 0) dpi = 300;
+    return std::to_wstring(dpi) + L" DPI";
+}
+
+void qc_free_preview(QcWindowState& qc) {
+    if (qc.hbmp_preview) {
+        DeleteObject(qc.hbmp_preview);
+        qc.hbmp_preview = nullptr;
+    }
+    qc.bmp_w = 0;
+    qc.bmp_h = 0;
+}
+
+void qc_update_preview(QcWindowState& qc) {
+    qc_free_preview(qc);
+
+    if (qc.selected_index < 0 || qc.selected_index >= static_cast<int>(qc.items.size())) {
+        // Clear info labels.
+        SetWindowTextW(qc.hwnd_filename, L"");
+        SetWindowTextW(qc.hwnd_imagetype, L"Image type:  Unknown");
+        SetWindowTextW(qc.hwnd_imagesize, L"Image size:  Unknown");
+        SetWindowTextW(qc.hwnd_resolution, L"Resolution:  Unknown");
+        InvalidateRect(qc.hwnd_preview, nullptr, TRUE);
+        return;
+    }
+
+    auto& item = qc.items[qc.selected_index];
+    const Image& img = (qc.showing_output && item.processed)
+                            ? *item.processed : item.original;
+
+    // Create preview bitmap.
+    if (!img.empty()) {
+        HDC hdc = GetDC(qc.hwnd_preview);
+        qc.hbmp_preview = create_display_bitmap(hdc, img);
+        ReleaseDC(qc.hwnd_preview, hdc);
+        qc.bmp_w = img.width();
+        qc.bmp_h = img.height();
+    }
+
+    // Update info labels.
+    auto fname = item.source_path.filename().wstring();
+    SetWindowTextW(qc.hwnd_filename,
+                   (L"File name:   " + fname).c_str());
+    SetWindowTextW(qc.hwnd_imagetype,
+                   (L"Image type:  " + qc_image_type_str(item.source_path, img)).c_str());
+    SetWindowTextW(qc.hwnd_imagesize,
+                   (L"Image size:  " + qc_image_size_str(img)).c_str());
+    SetWindowTextW(qc.hwnd_resolution,
+                   (L"Resolution:  " + qc_resolution_str(img)).c_str());
+
+    InvalidateRect(qc.hwnd_preview, nullptr, TRUE);
+}
+
+void qc_populate_list(QcWindowState& qc) {
+    SendMessageW(qc.hwnd_file_list, LB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < static_cast<int>(qc.items.size()); ++i) {
+        auto& item = qc.items[i];
+        std::wstring display = item.source_path.wstring();
+        if (!item.reason.empty())
+            display += L"\n    " + widen(item.reason);
+        SendMessageW(qc.hwnd_file_list, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(display.c_str()));
+    }
+    if (!qc.items.empty()) {
+        qc.selected_index = 0;
+        SendMessageW(qc.hwnd_file_list, LB_SETCURSEL, 0, 0);
+        qc_update_preview(qc);
+    }
+}
+
+// Custom-draw the preview panel to show the image fitted.
+void qc_paint_preview(QcWindowState& qc, HDC hdc, RECT rc) {
+    int pw = rc.right - rc.left;
+    int ph = rc.bottom - rc.top;
+
+    // Fill background with white.
+    HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+
+    if (!qc.hbmp_preview || qc.bmp_w <= 0 || qc.bmp_h <= 0) {
+        // Draw X placeholder.
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(255, 0, 0));
+        auto old_pen = SelectObject(hdc, pen);
+        MoveToEx(hdc, rc.left, rc.top, nullptr);
+        LineTo(hdc, rc.right, rc.bottom);
+        MoveToEx(hdc, rc.right, rc.top, nullptr);
+        LineTo(hdc, rc.left, rc.bottom);
+        SelectObject(hdc, old_pen);
+        DeleteObject(pen);
+        return;
+    }
+
+    // Fit image into preview area.
+    double zx = static_cast<double>(pw) / qc.bmp_w;
+    double zy = static_cast<double>(ph) / qc.bmp_h;
+    double z = (std::min)(zx, zy);
+    int dst_w = static_cast<int>(qc.bmp_w * z);
+    int dst_h = static_cast<int>(qc.bmp_h * z);
+    int off_x = rc.left + (pw - dst_w) / 2;
+    int off_y = rc.top + (ph - dst_h) / 2;
+
+    HDC mem_dc = CreateCompatibleDC(hdc);
+    auto old_bmp = SelectObject(mem_dc, qc.hbmp_preview);
+    SetStretchBltMode(hdc, HALFTONE);
+    StretchBlt(hdc, off_x, off_y, dst_w, dst_h,
+               mem_dc, 0, 0, qc.bmp_w, qc.bmp_h, SRCCOPY);
+    SelectObject(mem_dc, old_bmp);
+    DeleteDC(mem_dc);
+
+    // Draw a thin border around the image.
+    HPEN border_pen = CreatePen(PS_SOLID, 1, RGB(0, 0, 200));
+    auto old_p = SelectObject(hdc, border_pen);
+    auto old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, off_x - 1, off_y - 1, off_x + dst_w + 1, off_y + dst_h + 1);
+    SelectObject(hdc, old_p);
+    SelectObject(hdc, old_brush);
+    DeleteObject(border_pen);
+}
+
+HWND create_qc_window(AppState& state, QcWindowKind kind, QcWindowState* qc_state) {
+    qc_state->kind = kind;
+    qc_state->app = &state;
+
+    const wchar_t* title = (kind == QcWindowKind::ExceptionList)
+                               ? L"Exception List" : L"Good Files List";
+
+    HWND hwnd = CreateWindowExW(
+        0, kQcWindowClass, title,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1050, 700,
+        state.hwnd_main, nullptr, state.hinstance, qc_state);
+
+    qc_state->hwnd_self = hwnd;
+    return hwnd;
+}
+
+void qc_layout(QcWindowState& qc) {
+    if (!qc.hwnd_self) return;
+    RECT rc;
+    GetClientRect(qc.hwnd_self, &rc);
+    int cw = rc.right;
+    int ch = rc.bottom;
+
+    // Button rows at bottom: 2 rows, each 30px high, 4px gap.
+    int btn_h = 28;
+    int btn_row2_y = ch - btn_h - 4;
+    int btn_row1_y = btn_row2_y - btn_h - 4;
+    int content_h = btn_row1_y - 4;
+
+    // Left panel (file list): ~60% width.
+    int list_w = cw * 60 / 100;
+    // Right panel (preview + info): remaining.
+    int right_x = list_w + 4;
+    int right_w = cw - right_x - 4;
+
+    // File list.
+    MoveWindow(qc.hwnd_file_list, 4, 24, list_w - 8, content_h - 28, TRUE);
+
+    // Preview tab.
+    int tab_h = 24;
+    MoveWindow(qc.hwnd_preview_tab, right_x, 4, right_w, tab_h, TRUE);
+
+    // Preview area.
+    int preview_y = 4 + tab_h + 2;
+    int info_h = 80;  // Space for file info labels.
+    int preview_h = content_h - preview_y - info_h;
+    if (preview_h < 50) preview_h = 50;
+    MoveWindow(qc.hwnd_preview, right_x, preview_y, right_w, preview_h, TRUE);
+
+    // Info labels below preview.
+    int info_y = preview_y + preview_h + 4;
+    int label_h = 18;
+    MoveWindow(qc.hwnd_filename, right_x, info_y, right_w, label_h, TRUE);
+    MoveWindow(qc.hwnd_imagetype, right_x, info_y + label_h, right_w, label_h, TRUE);
+    MoveWindow(qc.hwnd_imagesize, right_x, info_y + label_h * 2, right_w, label_h, TRUE);
+    MoveWindow(qc.hwnd_resolution, right_x, info_y + label_h * 3, right_w, label_h, TRUE);
+
+    // Button row 1: Investigate, Re-process Now, Fix Margins | View, Edit.
+    int bx = 8;
+    int bw1 = 110;
+    auto move_btn = [&](HWND h, int x, int y, int w) {
+        if (h) MoveWindow(h, x, y, w, btn_h, TRUE);
+    };
+    HWND btn_investigate = GetDlgItem(qc.hwnd_self, IDC_QC_INVESTIGATE_BTN);
+    HWND btn_reprocess = GetDlgItem(qc.hwnd_self, IDC_QC_REPROCESS_BTN);
+    HWND btn_fixmargins = GetDlgItem(qc.hwnd_self, IDC_QC_FIX_MARGINS_BTN);
+    HWND btn_view = GetDlgItem(qc.hwnd_self, IDC_QC_VIEW_BTN);
+    HWND btn_edit = GetDlgItem(qc.hwnd_self, IDC_QC_EDIT_BTN);
+
+    move_btn(btn_investigate, bx, btn_row1_y, bw1);
+    move_btn(btn_reprocess, bx + bw1 + 4, btn_row1_y, 130);
+    move_btn(btn_fixmargins, bx + bw1 + 4 + 134, btn_row1_y, 100);
+    // View and Edit on the right side.
+    move_btn(btn_view, right_x, btn_row1_y, 80);
+    move_btn(btn_edit, right_x + 84, btn_row1_y, 80);
+
+    // Button row 2: To Main Win, To EL/GFL, Resubmit All, Delete | Help.
+    HWND btn_tomain = GetDlgItem(qc.hwnd_self, IDC_QC_TO_MAIN_BTN);
+    HWND btn_toother = GetDlgItem(qc.hwnd_self, IDC_QC_TO_OTHER_BTN);
+    HWND btn_resubmit = GetDlgItem(qc.hwnd_self, IDC_QC_RESUBMIT_ALL_BTN);
+    HWND btn_delete = GetDlgItem(qc.hwnd_self, IDC_QC_DELETE_BTN);
+    HWND btn_help = GetDlgItem(qc.hwnd_self, IDC_QC_HELP_BTN);
+
+    move_btn(btn_tomain, bx, btn_row2_y, 110);
+    move_btn(btn_toother, bx + 114, btn_row2_y, 90);
+    move_btn(btn_resubmit, bx + 114 + 94, btn_row2_y, 110);
+    move_btn(btn_delete, bx + 114 + 94 + 114, btn_row2_y, 80);
+    move_btn(btn_help, right_x + right_w - 80, btn_row2_y, 80);
+}
+
+LRESULT CALLBACK QcPreviewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* qc = reinterpret_cast<QcWindowState*>(
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (qc) {
+            // Double-buffer.
+            int pw = rc.right - rc.left;
+            int ph = rc.bottom - rc.top;
+            HDC buf_dc = CreateCompatibleDC(hdc);
+            HBITMAP buf_bmp = CreateCompatibleBitmap(hdc, pw, ph);
+            auto old = SelectObject(buf_dc, buf_bmp);
+            RECT buf_rc = {0, 0, pw, ph};
+            qc_paint_preview(*qc, buf_dc, buf_rc);
+            BitBlt(hdc, 0, 0, pw, ph, buf_dc, 0, 0, SRCCOPY);
+            SelectObject(buf_dc, old);
+            DeleteObject(buf_bmp);
+            DeleteDC(buf_dc);
+        } else {
+            FillRect(hdc, &rc, reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK QcWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* qc = reinterpret_cast<QcWindowState*>(
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    switch (msg) {
+    case WM_CREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        qc = reinterpret_cast<QcWindowState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(qc));
+        qc->hwnd_self = hwnd;
+
+        auto inst = qc->app->hinstance;
+        auto font = qc->app->hfont_ui;
+        bool is_el = (qc->kind == QcWindowKind::ExceptionList);
+
+        // Header label.
+        create_label(hwnd, inst, font,
+                     is_el ? L"A list of problematic files:"
+                           : L"A list of good files:",
+                     4, 4, 300, 18);
+
+        // File list (owner-draw listbox for 2-line items).
+        qc->hwnd_file_list = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY |
+            LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
+            4, 24, 400, 400, hwnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_QC_FILE_LIST)),
+            inst, nullptr);
+        set_ui_font(qc->hwnd_file_list, font);
+        // Set item height for 2-line display.
+        SendMessageW(qc->hwnd_file_list, LB_SETITEMHEIGHT, 0, MAKELPARAM(is_el ? 36 : 20, 0));
+
+        // Input/Output Overview tab.
+        qc->hwnd_preview_tab = CreateWindowExW(
+            0, WC_TABCONTROLW, nullptr,
+            WS_CHILD | WS_VISIBLE | TCS_TABS,
+            0, 0, 100, 24, hwnd,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_QC_PREVIEW_TAB)),
+            inst, nullptr);
+        set_ui_font(qc->hwnd_preview_tab, font);
+        {
+            TCITEMW ti{};
+            ti.mask = TCIF_TEXT;
+            ti.pszText = const_cast<wchar_t*>(L"Input Overview");
+            SendMessageW(qc->hwnd_preview_tab, TCM_INSERTITEMW, 0,
+                         reinterpret_cast<LPARAM>(&ti));
+            ti.pszText = const_cast<wchar_t*>(L"Output Overview");
+            SendMessageW(qc->hwnd_preview_tab, TCM_INSERTITEMW, 1,
+                         reinterpret_cast<LPARAM>(&ti));
+        }
+
+        // Preview panel (static child, custom-painted).
+        qc->hwnd_preview = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"STATIC", nullptr,
+            WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+            0, 0, 100, 100, hwnd, nullptr, inst, nullptr);
+        SetWindowLongPtrW(qc->hwnd_preview, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(qc));
+        SetWindowLongPtrW(qc->hwnd_preview, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(QcPreviewProc));
+
+        // Info labels.
+        qc->hwnd_filename = create_label(hwnd, inst, font, L"File name:", 0, 0, 300, 18);
+        qc->hwnd_imagetype = create_label(hwnd, inst, font, L"Image type:  Unknown", 0, 0, 300, 18);
+        qc->hwnd_imagesize = create_label(hwnd, inst, font, L"Image size:  Unknown", 0, 0, 300, 18);
+        qc->hwnd_resolution = create_label(hwnd, inst, font, L"Resolution:  Unknown", 0, 0, 300, 18);
+
+        // Button row 1: Investigate, Re-process Now, Fix Margins, View, Edit.
+        create_button(hwnd, inst, font, L"Investigate", 0, 0, 110, 28, IDC_QC_INVESTIGATE_BTN);
+        create_button(hwnd, inst, font, L"Re-process Now", 0, 0, 130, 28, IDC_QC_REPROCESS_BTN);
+        create_button(hwnd, inst, font, L"Fix Margins", 0, 0, 100, 28, IDC_QC_FIX_MARGINS_BTN);
+        create_button(hwnd, inst, font, L"View", 0, 0, 80, 28, IDC_QC_VIEW_BTN);
+        create_button(hwnd, inst, font, L"Edit", 0, 0, 80, 28, IDC_QC_EDIT_BTN);
+
+        // Button row 2: To Main Win, To EL/GFL, Resubmit All, Delete, Help.
+        create_button(hwnd, inst, font, L"To Main Win", 0, 0, 110, 28, IDC_QC_TO_MAIN_BTN);
+        create_button(hwnd, inst, font,
+                      is_el ? L"To GFL" : L"To EL",
+                      0, 0, 90, 28, IDC_QC_TO_OTHER_BTN);
+        create_button(hwnd, inst, font, L"Resubmit All", 0, 0, 110, 28, IDC_QC_RESUBMIT_ALL_BTN);
+        create_button(hwnd, inst, font, L"Delete", 0, 0, 80, 28, IDC_QC_DELETE_BTN);
+        create_button(hwnd, inst, font, L"Help", 0, 0, 80, 28, IDC_QC_HELP_BTN);
+
+        return 0;
+    }
+
+    case WM_SIZE:
+        if (qc) qc_layout(*qc);
+        return 0;
+
+    case WM_DRAWITEM: {
+        if (!qc) break;
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+        if (dis->CtlID != IDC_QC_FILE_LIST) break;
+        if (dis->itemID == static_cast<UINT>(-1)) break;
+
+        // Get item text.
+        int len = static_cast<int>(
+            SendMessageW(dis->hwndItem, LB_GETTEXTLEN, dis->itemID, 0));
+        std::wstring text(len + 1, L'\0');
+        SendMessageW(dis->hwndItem, LB_GETTEXT, dis->itemID,
+                     reinterpret_cast<LPARAM>(text.data()));
+
+        // Selected state.
+        bool selected = (dis->itemState & ODS_SELECTED) != 0;
+        COLORREF bg_color = selected ? GetSysColor(COLOR_HIGHLIGHT)
+                                     : GetSysColor(COLOR_WINDOW);
+        COLORREF fg_color = selected ? GetSysColor(COLOR_HIGHLIGHTTEXT)
+                                     : GetSysColor(COLOR_WINDOWTEXT);
+
+        HBRUSH br = CreateSolidBrush(bg_color);
+        FillRect(dis->hDC, &dis->rcItem, br);
+        DeleteObject(br);
+
+        SetBkMode(dis->hDC, TRANSPARENT);
+        SetTextColor(dis->hDC, fg_color);
+
+        // Split at newline for 2-line display.
+        auto nl_pos = text.find(L'\n');
+        RECT text_rc = dis->rcItem;
+        text_rc.left += 22;  // Space for icon.
+
+        if (nl_pos != std::wstring::npos) {
+            // Line 1: file path.
+            auto line1 = text.substr(0, nl_pos);
+            DrawTextW(dis->hDC, line1.c_str(), static_cast<int>(line1.size()),
+                      &text_rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+            // Line 2: reason (bold).
+            auto line2 = text.substr(nl_pos + 1);
+            // Trim leading spaces.
+            auto start = line2.find_first_not_of(L' ');
+            if (start != std::wstring::npos) line2 = line2.substr(start);
+
+            HFONT bold_font = CreateFontW(-12, 0, 0, 0, FW_BOLD,
+                FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            auto old_font = SelectObject(dis->hDC, bold_font);
+            text_rc.top += 17;
+            DrawTextW(dis->hDC, line2.c_str(), static_cast<int>(line2.size()),
+                      &text_rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dis->hDC, old_font);
+            DeleteObject(bold_font);
+        } else {
+            DrawTextW(dis->hDC, text.c_str(), static_cast<int>(text.size()),
+                      &text_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        }
+
+        // Draw error/check icon.
+        bool is_el = (qc->kind == QcWindowKind::ExceptionList);
+        RECT icon_rc = dis->rcItem;
+        icon_rc.right = icon_rc.left + 20;
+        icon_rc.left += 2;
+        // Simple text icon indicator.
+        const wchar_t* icon = is_el ? L"\x26A0" : L"\x2713";  // Warning or check.
+        COLORREF icon_color = is_el ? RGB(200, 0, 0) : RGB(0, 150, 0);
+        SetTextColor(dis->hDC, icon_color);
+        DrawTextW(dis->hDC, icon, -1, &icon_rc,
+                  DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+        // Focus rect.
+        if (dis->itemState & ODS_FOCUS)
+            DrawFocusRect(dis->hDC, &dis->rcItem);
+
+        return TRUE;
+    }
+
+    case WM_MEASUREITEM: {
+        auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
+        if (mis->CtlID == IDC_QC_FILE_LIST) {
+            bool is_el = qc && (qc->kind == QcWindowKind::ExceptionList);
+            mis->itemHeight = is_el ? 36 : 20;
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_COMMAND: {
+        if (!qc) break;
+        auto id = LOWORD(wp);
+        auto code = HIWORD(wp);
+
+        // Listbox selection change.
+        if (id == IDC_QC_FILE_LIST && code == LBN_SELCHANGE) {
+            int sel = static_cast<int>(
+                SendMessageW(qc->hwnd_file_list, LB_GETCURSEL, 0, 0));
+            if (sel != LB_ERR) {
+                qc->selected_index = sel;
+                qc_update_preview(*qc);
+            }
+            return 0;
+        }
+
+        switch (id) {
+        case IDC_QC_TO_MAIN_BTN:
+            // Show main window, hide this.
+            ShowWindow(qc->app->hwnd_main, SW_SHOW);
+            SetForegroundWindow(qc->app->hwnd_main);
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+
+        case IDC_QC_TO_OTHER_BTN: {
+            // Switch to the other QC window.
+            HWND other = (qc->kind == QcWindowKind::ExceptionList)
+                             ? qc->app->hwnd_qc_goodfiles
+                             : qc->app->hwnd_qc_exception;
+            if (other) {
+                ShowWindow(other, SW_SHOW);
+                SetForegroundWindow(other);
+            }
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+
+        case IDC_QC_DELETE_BTN: {
+            // Delete selected item from list.
+            if (qc->selected_index >= 0 &&
+                qc->selected_index < static_cast<int>(qc->items.size())) {
+                qc->items.erase(qc->items.begin() + qc->selected_index);
+                if (qc->selected_index >= static_cast<int>(qc->items.size()))
+                    qc->selected_index = static_cast<int>(qc->items.size()) - 1;
+                qc_populate_list(*qc);
+            }
+            return 0;
+        }
+
+        case IDC_QC_INVESTIGATE_BTN: {
+            // Load selected file in main viewer for investigation.
+            if (qc->selected_index >= 0 &&
+                qc->selected_index < static_cast<int>(qc->items.size())) {
+                auto& item = qc->items[qc->selected_index];
+                auto& state = *qc->app;
+                state.entries.clear();
+                state.current_index = -1;
+                state.showing_processed = false;
+                state.current_file = item.source_path;
+
+                auto ext = to_lower(item.source_path.extension().string());
+                std::size_t pages = 1;
+                if (ext == ".tif" || ext == ".tiff") {
+                    pages = count_tiff_pages(item.source_path);
+                    if (pages == 0) pages = 1;
+                }
+                for (std::size_t p = 0; p < pages; ++p) {
+                    auto img = load_image_file(item.source_path, p);
+                    if (img.empty()) break;
+                    ImageEntry entry;
+                    entry.source_path = item.source_path;
+                    entry.page_index = p;
+                    entry.original = std::move(img);
+                    state.entries.push_back(std::move(entry));
+                }
+                if (!state.entries.empty()) {
+                    state.current_index = 0;
+                    state.fit_mode = true;
+                    update_display(state);
+                }
+                ShowWindow(state.hwnd_main, SW_SHOW);
+                SetForegroundWindow(state.hwnd_main);
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            return 0;
+        }
+
+        case IDC_QC_REPROCESS_BTN: {
+            // Re-process the selected file with current profile.
+            if (qc->selected_index >= 0 &&
+                qc->selected_index < static_cast<int>(qc->items.size())) {
+                auto& item = qc->items[qc->selected_index];
+                SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                auto result = run_pipeline(item.original, qc->app->profile, 0);
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                if (result.success) {
+                    item.processed = std::move(result.image);
+                    item.result = std::move(result);
+                    item.reason.clear();
+                    // Move to good files list if this was in exceptions.
+                    if (qc->kind == QcWindowKind::ExceptionList) {
+                        QcEntry moved = std::move(item);
+                        qc->items.erase(qc->items.begin() + qc->selected_index);
+                        // Find the good files window state.
+                        auto* gfl_qc = reinterpret_cast<QcWindowState*>(
+                            GetWindowLongPtrW(qc->app->hwnd_qc_goodfiles, GWLP_USERDATA));
+                        if (gfl_qc) {
+                            gfl_qc->items.push_back(std::move(moved));
+                            qc_populate_list(*gfl_qc);
+                        }
+                        if (qc->selected_index >= static_cast<int>(qc->items.size()))
+                            qc->selected_index = static_cast<int>(qc->items.size()) - 1;
+                        qc_populate_list(*qc);
+                        MessageBoxW(hwnd, L"Re-processed successfully.\nMoved to Good Files List.",
+                                    L"Re-process", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        qc_update_preview(*qc);
+                        MessageBoxW(hwnd, L"Re-processed successfully.",
+                                    L"Re-process", MB_OK | MB_ICONINFORMATION);
+                    }
+                } else {
+                    auto msg = L"Re-processing failed:\n" + widen(result.error);
+                    MessageBoxW(hwnd, msg.c_str(), L"Re-process", MB_ICONERROR | MB_OK);
+                }
+            }
+            return 0;
+        }
+
+        case IDC_QC_RESUBMIT_ALL_BTN: {
+            // Re-process all items.
+            SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            int moved = 0;
+            for (int i = static_cast<int>(qc->items.size()) - 1; i >= 0; --i) {
+                auto& item = qc->items[i];
+                auto result = run_pipeline(item.original, qc->app->profile, 0);
+                if (result.success) {
+                    item.processed = std::move(result.image);
+                    item.result = std::move(result);
+                    item.reason.clear();
+                    if (qc->kind == QcWindowKind::ExceptionList) {
+                        auto* gfl_qc = reinterpret_cast<QcWindowState*>(
+                            GetWindowLongPtrW(qc->app->hwnd_qc_goodfiles, GWLP_USERDATA));
+                        if (gfl_qc) {
+                            gfl_qc->items.push_back(std::move(item));
+                        }
+                        qc->items.erase(qc->items.begin() + i);
+                        ++moved;
+                    }
+                }
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            if (qc->kind == QcWindowKind::ExceptionList) {
+                auto* gfl_qc = reinterpret_cast<QcWindowState*>(
+                    GetWindowLongPtrW(qc->app->hwnd_qc_goodfiles, GWLP_USERDATA));
+                if (gfl_qc) qc_populate_list(*gfl_qc);
+            }
+            qc->selected_index = qc->items.empty() ? -1 : 0;
+            qc_populate_list(*qc);
+            std::wostringstream msg;
+            msg << L"Resubmitted all. " << moved << L" moved to Good Files List.";
+            MessageBoxW(hwnd, msg.str().c_str(), L"Resubmit All", MB_OK);
+            return 0;
+        }
+
+        case IDC_QC_HELP_BTN:
+            MessageBoxW(hwnd,
+                L"Exception List: Files that failed processing.\n"
+                L"Good Files List: Files that processed successfully.\n\n"
+                L"Investigate: Open file in main viewer.\n"
+                L"Re-process Now: Re-run pipeline on selected file.\n"
+                L"Resubmit All: Re-process all files in list.\n"
+                L"Delete: Remove selected file from list.",
+                L"Help", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_NOTIFY: {
+        if (!qc) break;
+        auto* hdr = reinterpret_cast<NMHDR*>(lp);
+        if (hdr->hwndFrom == qc->hwnd_preview_tab && hdr->code == TCN_SELCHANGE) {
+            int sel = static_cast<int>(
+                SendMessageW(qc->hwnd_preview_tab, TCM_GETCURSEL, 0, 0));
+            qc->showing_output = (sel == 1);
+            qc_update_preview(*qc);
+        }
+        return 0;
+    }
+
+    case WM_CLOSE:
+        // Just hide, don't destroy.
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+
+    case WM_DESTROY:
+        qc_free_preview(*qc);
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Populate and show both QC windows after batch processing.
+void show_qc_windows(AppState& state) {
+    // Get QC window states.
+    auto* el_qc = reinterpret_cast<QcWindowState*>(
+        GetWindowLongPtrW(state.hwnd_qc_exception, GWLP_USERDATA));
+    auto* gfl_qc = reinterpret_cast<QcWindowState*>(
+        GetWindowLongPtrW(state.hwnd_qc_goodfiles, GWLP_USERDATA));
+    if (!el_qc || !gfl_qc) return;
+
+    // Clear previous items.
+    el_qc->items.clear();
+    gfl_qc->items.clear();
+
+    // Sort entries into good/exception.
+    for (auto& entry : state.entries) {
+        QcEntry qe;
+        qe.source_path = entry.source_path;
+        qe.original = entry.original;
+        qe.processed = entry.processed;
+        qe.result = entry.result;
+
+        if (entry.is_exception) {
+            qe.reason = entry.exception_reason;
+            el_qc->items.push_back(std::move(qe));
+        } else {
+            gfl_qc->items.push_back(std::move(qe));
+        }
+    }
+
+    // Populate lists.
+    el_qc->selected_index = el_qc->items.empty() ? -1 : 0;
+    gfl_qc->selected_index = gfl_qc->items.empty() ? -1 : 0;
+    qc_populate_list(*el_qc);
+    qc_populate_list(*gfl_qc);
+
+    // Show whichever has items (prefer exception list if both have items).
+    if (!el_qc->items.empty()) {
+        ShowWindow(state.hwnd_qc_exception, SW_SHOW);
+        SetForegroundWindow(state.hwnd_qc_exception);
+    }
+    if (!gfl_qc->items.empty() && el_qc->items.empty()) {
+        ShowWindow(state.hwnd_qc_goodfiles, SW_SHOW);
+        SetForegroundWindow(state.hwnd_qc_goodfiles);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Investigation View
+// ---------------------------------------------------------------------------
+
+void enter_investigate_mode(AppState& state) {
+    if (state.current_index < 0 || state.entries.empty()) {
+        MessageBoxW(state.hwnd_main,
+                    L"No image loaded. Load or process files first.",
+                    L"Investigation View", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    state.investigate_mode = true;
+
+    // Create investigation panel if it doesn't exist.
+    if (!state.hwnd_invest_panel) {
+        auto inst = state.hinstance;
+        auto font = state.hfont_ui;
+
+        state.hwnd_invest_panel = CreateWindowExW(
+            0, kTabPageClass, nullptr,
+            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0, 0, 350, 200, state.hwnd_main,
+            nullptr, inst, nullptr);
+
+        create_label(state.hwnd_invest_panel, inst, font,
+                     L"Investigation View - Processing Steps:", 4, 4, 300, 18);
+
+        state.hwnd_invest_steps = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | WS_VSCROLL,
+            4, 24, 340, 130, state.hwnd_invest_panel,
+            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_INVEST_STEPS)),
+            inst, nullptr);
+        set_ui_font(state.hwnd_invest_steps, font);
+        ListView_SetExtendedListViewStyle(state.hwnd_invest_steps,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+        LVCOLUMNW col{};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.cx = 120;
+        col.pszText = const_cast<wchar_t*>(L"Step");
+        SendMessageW(state.hwnd_invest_steps, LVM_INSERTCOLUMNW, 0,
+                     reinterpret_cast<LPARAM>(&col));
+        col.cx = 60;
+        col.pszText = const_cast<wchar_t*>(L"Applied");
+        SendMessageW(state.hwnd_invest_steps, LVM_INSERTCOLUMNW, 1,
+                     reinterpret_cast<LPARAM>(&col));
+        col.cx = 160;
+        col.pszText = const_cast<wchar_t*>(L"Details");
+        SendMessageW(state.hwnd_invest_steps, LVM_INSERTCOLUMNW, 2,
+                     reinterpret_cast<LPARAM>(&col));
+
+        state.hwnd_invest_reprocess = create_button(
+            state.hwnd_invest_panel, inst, font,
+            L"Re-process (F5)", 4, 158, 110, 28, IDC_INVEST_REPROCESS_BTN);
+        state.hwnd_invest_back = create_button(
+            state.hwnd_invest_panel, inst, font,
+            L"Back to Job Setup", 120, 158, 130, 28, IDC_INVEST_BACK_BTN);
+    }
+
+    ShowWindow(state.hwnd_invest_panel, SW_SHOW);
+
+    // Process the current file if not already processed.
+    auto& entry = state.entries[state.current_index];
+    if (!entry.result) {
+        SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+        auto result = run_pipeline(entry.original, state.profile, entry.page_index);
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        if (result.success) {
+            entry.processed = std::move(result.image);
+        }
+        entry.result = std::move(result);
+        state.showing_processed = true;
+        update_display(state);
+    }
+
+    update_investigate_steps(state);
+    layout_children(state);
+
+    // Update title.
+    auto fname = entry.source_path.filename().string();
+    auto title = L"PPP Job Viewer - Investigation: " + widen(fname);
+    SetWindowTextW(state.hwnd_main, title.c_str());
+}
+
+void leave_investigate_mode(AppState& state) {
+    state.investigate_mode = false;
+    if (state.hwnd_invest_panel)
+        ShowWindow(state.hwnd_invest_panel, SW_HIDE);
+    layout_children(state);
+    update_title(state);
+}
+
+void update_investigate_steps(AppState& state) {
+    if (!state.hwnd_invest_steps) return;
+    SendMessageW(state.hwnd_invest_steps, LVM_DELETEALLITEMS, 0, 0);
+
+    if (state.current_index < 0) return;
+    auto& entry = state.entries[state.current_index];
+    if (!entry.result) return;
+
+    int idx = 0;
+    for (auto& step : entry.result->steps) {
+        auto name = widen(step.name);
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = idx;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(name.c_str());
+        SendMessageW(state.hwnd_invest_steps, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+
+        // Applied column.
+        const wchar_t* applied = step.applied ? L"Yes" : L"No";
+        item.iSubItem = 1;
+        item.pszText = const_cast<wchar_t*>(applied);
+        SendMessageW(state.hwnd_invest_steps, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&item));
+
+        // Details column.
+        auto detail = widen(step.detail);
+        item.iSubItem = 2;
+        item.pszText = const_cast<wchar_t*>(detail.c_str());
+        SendMessageW(state.hwnd_invest_steps, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&item));
+        ++idx;
+    }
+
+    // Show error if processing failed.
+    if (!entry.result->success && !entry.result->error.empty()) {
+        auto err = widen(entry.result->error);
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = idx;
+        item.iSubItem = 0;
+        item.pszText = const_cast<wchar_t*>(L"ERROR");
+        SendMessageW(state.hwnd_invest_steps, LVM_INSERTITEMW, 0,
+                     reinterpret_cast<LPARAM>(&item));
+        item.iSubItem = 2;
+        item.pszText = const_cast<wchar_t*>(err.c_str());
+        SendMessageW(state.hwnd_invest_steps, LVM_SETITEMTEXTW, idx,
+                     reinterpret_cast<LPARAM>(&item));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3121,18 +4259,40 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // --- Job Setup buttons ---
         case IDC_JS_LOOK_IN_BROWSE: {
-            wchar_t path[MAX_PATH] = {};
-            BROWSEINFOW bi{};
-            bi.hwndOwner = hwnd;
-            bi.pszDisplayName = path;
-            bi.lpszTitle = L"Select folder to browse";
-            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-            auto* pidl = SHBrowseForFolderW(&bi);
-            if (pidl && SHGetPathFromIDListW(pidl, path)) {
-                state->browse_dir = path;
-                populate_file_list(*state);
+            IFileDialog* pfd = nullptr;
+            HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+            if (SUCCEEDED(hr)) {
+                DWORD opts = 0;
+                pfd->GetOptions(&opts);
+                pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+                pfd->SetTitle(L"Select folder to browse");
+                // Start from the current "Look in" directory.
+                if (!state->browse_dir.empty()) {
+                    IShellItem* psi_start = nullptr;
+                    SHCreateItemFromParsingName(
+                        state->browse_dir.wstring().c_str(),
+                        nullptr, IID_PPV_ARGS(&psi_start));
+                    if (psi_start) {
+                        pfd->SetFolder(psi_start);
+                        psi_start->Release();
+                    }
+                }
+                hr = pfd->Show(hwnd);
+                if (SUCCEEDED(hr)) {
+                    IShellItem* psi = nullptr;
+                    if (SUCCEEDED(pfd->GetResult(&psi))) {
+                        wchar_t* folder_path = nullptr;
+                        if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &folder_path))) {
+                            state->browse_dir = folder_path;
+                            populate_file_list(*state);
+                            CoTaskMemFree(folder_path);
+                        }
+                        psi->Release();
+                    }
+                }
+                pfd->Release();
             }
-            if (pidl) CoTaskMemFree(pidl);
             break;
         }
         case IDC_JS_UP_DIR_BTN: {
@@ -3214,19 +4374,92 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (HIWORD(wp) == CBN_SELCHANGE)
                 populate_file_list(*state);
             break;
-        case IDC_JS_OUTDIR_BROWSE: {
-            wchar_t path[MAX_PATH] = {};
-            BROWSEINFOW bi{};
-            bi.hwndOwner = hwnd;
-            bi.pszDisplayName = path;
-            bi.lpszTitle = L"Select output directory";
-            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-            auto* pidl = SHBrowseForFolderW(&bi);
-            if (pidl && SHGetPathFromIDListW(pidl, path))
-                SetDlgItemTextW(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO, path);
-            if (pidl) CoTaskMemFree(pidl);
+        case IDC_JS_OUTDIR_CHECK: {
+            // Enable/disable the output dir edit and browse button.
+            BOOL checked = IsDlgButtonChecked(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_CHECK);
+            auto h_edit = GetDlgItem(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO);
+            auto h_browse = GetDlgItem(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_BROWSE);
+            EnableWindow(h_edit, checked);
+            EnableWindow(h_browse, checked);
             break;
         }
+
+        case IDC_JS_OUTDIR_BROWSE: {
+            IFileDialog* pfd = nullptr;
+            HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+            if (SUCCEEDED(hr)) {
+                DWORD opts = 0;
+                pfd->GetOptions(&opts);
+                pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+                pfd->SetTitle(L"Select output directory");
+                // Start from existing output dir text, or fall back to browse_dir.
+                fs::path start_dir;
+                wchar_t cur_dir[MAX_PATH] = {};
+                GetDlgItemTextW(state->hwnd_js_batch_panel, IDC_JS_OUTDIR_COMBO,
+                                cur_dir, MAX_PATH);
+                if (cur_dir[0] && fs::is_directory(cur_dir))
+                    start_dir = cur_dir;
+                else if (!state->browse_dir.empty())
+                    start_dir = state->browse_dir;
+                if (!start_dir.empty()) {
+                    IShellItem* psi_start = nullptr;
+                    SHCreateItemFromParsingName(
+                        start_dir.wstring().c_str(),
+                        nullptr, IID_PPV_ARGS(&psi_start));
+                    if (psi_start) {
+                        pfd->SetFolder(psi_start);
+                        psi_start->Release();
+                    }
+                }
+                hr = pfd->Show(hwnd);
+                if (SUCCEEDED(hr)) {
+                    IShellItem* psi = nullptr;
+                    if (SUCCEEDED(pfd->GetResult(&psi))) {
+                        wchar_t* folder_path = nullptr;
+                        if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &folder_path))) {
+                            SetDlgItemTextW(state->hwnd_js_batch_panel,
+                                IDC_JS_OUTDIR_COMBO, folder_path);
+                            CheckDlgButton(state->hwnd_js_batch_panel,
+                                IDC_JS_OUTDIR_CHECK, BST_CHECKED);
+                            CoTaskMemFree(folder_path);
+                        }
+                        psi->Release();
+                    }
+                }
+                pfd->Release();
+            }
+            break;
+        }
+
+        // --- QC window shortcuts ---
+        case IDM_SHOW_EXCEPTION_LIST:
+        case IDC_JS_EXCEPTION_LIST_BTN:
+            if (state->hwnd_qc_exception) {
+                ShowWindow(state->hwnd_qc_exception, SW_SHOW);
+                SetForegroundWindow(state->hwnd_qc_exception);
+            }
+            break;
+        case IDM_SHOW_GOOD_FILES_LIST:
+        case IDC_JS_GOOD_FILES_BTN:
+            if (state->hwnd_qc_goodfiles) {
+                ShowWindow(state->hwnd_qc_goodfiles, SW_SHOW);
+                SetForegroundWindow(state->hwnd_qc_goodfiles);
+            }
+            break;
+        case IDM_SHOW_INVESTIGATE:
+        case IDC_JS_INVESTIGATE_BTN:
+            enter_investigate_mode(*state);
+            break;
+
+        // --- Investigation panel buttons ---
+        case IDC_INVEST_REPROCESS_BTN:
+            do_process_current(*state);
+            update_investigate_steps(*state);
+            break;
+        case IDC_INVEST_BACK_BTN:
+            leave_investigate_mode(*state);
+            break;
 
         case IDM_HELP_ABOUT:
             MessageBoxW(hwnd,
@@ -3270,6 +4503,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             case VK_F7:
                 state->showing_processed = true;
                 update_display(*state);
+                return 0;
+            case VK_F8:
+                if (state->investigate_mode)
+                    leave_investigate_mode(*state);
+                else
+                    enter_investigate_mode(*state);
                 return 0;
             case VK_SPACE:
                 if (state->current_index >= 0) {
@@ -3394,6 +4633,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
     register_tab_page_class(instance);
     register_image_panel_class(instance);
+    register_qc_window_class(instance);
 
     constexpr wchar_t kWindowClassName[] = L"PPPJobViewerMainWindow";
 
@@ -3436,6 +4676,14 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
         return 1;
     }
 
+    // Create QC popup windows (initially hidden).
+    static QcWindowState qc_exception_state;
+    static QcWindowState qc_goodfiles_state;
+    state.hwnd_qc_exception = create_qc_window(state, QcWindowKind::ExceptionList,
+                                                &qc_exception_state);
+    state.hwnd_qc_goodfiles = create_qc_window(state, QcWindowKind::GoodFilesList,
+                                                &qc_goodfiles_state);
+
     ShowWindow(hwnd, show_command);
     UpdateWindow(hwnd);
 
@@ -3447,6 +4695,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
         // Process
         {FVIRTKEY, VK_F5, IDM_PROCESS_CURRENT},
         {FSHIFT | FVIRTKEY, VK_F5, IDM_PROCESS_ALL},
+        {FVIRTKEY, VK_F8, IDM_SHOW_INVESTIGATE},
         // View / Zoom
         {FCONTROL | FVIRTKEY, '0', IDM_VIEW_FIT},
         {FCONTROL | FVIRTKEY, '1', IDM_VIEW_ACTUAL},
