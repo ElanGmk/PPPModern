@@ -1,6 +1,7 @@
 #include "ppp/core/tiff_writer.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstring>
 #include <fstream>
@@ -1272,6 +1273,26 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
 
     int rows_per_strip = rps_opt ? static_cast<int>(*rps_opt) : h;
 
+    // FillOrder: 1 = MSB-first (default), 2 = LSB-first (needs bit reversal).
+    auto fill_order_opt = ifd.get_int(Tag::FillOrder);
+    int fill_order = fill_order_opt ? static_cast<int>(*fill_order_opt) : 1;
+
+    // Bit-reversal LUT for FillOrder=2.
+    static const auto make_reverse_lut = []() {
+        std::array<std::uint8_t, 256> lut{};
+        for (int i = 0; i < 256; ++i) {
+            std::uint8_t v = static_cast<std::uint8_t>(i);
+            std::uint8_t r = 0;
+            for (int b = 0; b < 8; ++b) {
+                r = static_cast<std::uint8_t>((r << 1) | (v & 1));
+                v >>= 1;
+            }
+            lut[i] = r;
+        }
+        return lut;
+    };
+    static const auto reverse_lut = make_reverse_lut();
+
     // --- Group 4 fax: decode each strip independently ---
     // Each TIFF strip starts with a fresh all-white reference line and ends
     // with its own EOFB marker.
@@ -1283,13 +1304,23 @@ Image read_tiff_image(const std::uint8_t* data, std::size_t size,
             auto bc = strip_byte_counts[s];
             if (off + bc > size) return {};
 
+            // If FillOrder=2 (LSB-first), reverse bits before decoding.
+            std::vector<std::uint8_t> reversed_strip;
+            const std::uint8_t* strip_data = data + off;
+            if (fill_order == 2) {
+                reversed_strip.resize(bc);
+                for (std::size_t i = 0; i < bc; ++i)
+                    reversed_strip[i] = reverse_lut[strip_data[i]];
+                strip_data = reversed_strip.data();
+            }
+
             int rows_this_strip = std::min(rows_per_strip,
                                            static_cast<int>(h - row));
 
             // Decode into temp buffer, then copy rows to Image.
             std::vector<std::uint8_t> decoded(
                 static_cast<std::size_t>(tiff_row_bytes) * rows_this_strip, 0);
-            group4_decode_strip(data + off, bc,
+            group4_decode_strip(strip_data, bc,
                                 decoded.data(), w, rows_this_strip,
                                 tiff_row_bytes);
 

@@ -133,15 +133,27 @@ std::vector<Span> spans_from_bitmap(const std::uint8_t* data,
     assert(fg_bit == 0 || fg_bit == 1);
     std::vector<Span> spans;
 
+    // Byte that contains no foreground pixels (skip whole bytes for speed).
+    const std::uint8_t bg_byte = fg_bit ? 0x00 : 0xFF;
+    const int row_bytes = (width + 7) >> 3;
+
     for (std::int32_t row = 0; row < height; ++row) {
         const std::uint8_t* row_data = data + static_cast<std::ptrdiff_t>(row) * stride;
         std::int32_t col = 0;
 
         while (col < width) {
-            // Find start of foreground run.
+            // Skip whole background bytes to find start of foreground run.
+            if ((col & 7) == 0) {
+                int bi = col >> 3;
+                while (bi < row_bytes && row_data[bi] == bg_byte) ++bi;
+                col = bi << 3;
+                if (col >= width) break;
+            }
+
+            // Find start of foreground run (bit-level).
             while (col < width) {
                 int byte_idx = col >> 3;
-                int bit_idx = 7 - (col & 7);  // MSB-first within byte.
+                int bit_idx = 7 - (col & 7);
                 int bit = (row_data[byte_idx] >> bit_idx) & 1;
                 if (bit == fg_bit) break;
                 ++col;
@@ -228,35 +240,41 @@ std::vector<Component> find_components(const std::vector<Span>& spans,
     const std::size_t n = filtered.size();
     UnionFind uf(n);
 
-    // For each span, check adjacency with spans in the previous row.
-    // Spans are sorted by (row, col_start).
+    // For each span, check adjacency with spans in the previous row only.
+    // Spans are sorted by (row, col_start), so we track the previous row window.
     std::size_t prev_row_start = 0;
     std::size_t prev_row_end = 0;
+    std::int32_t last_row = -2;
 
     for (std::size_t i = 0; i < n; ++i) {
         const auto& cur = filtered[i];
 
-        // Advance prev_row window: find spans in the immediately preceding row.
-        if (i == 0 || filtered[i].row != filtered[i - 1].row) {
-            // Starting a new row — find all spans from row - 1.
-            prev_row_start = prev_row_end;  // Skip forward.
-            // But we need to find spans in cur.row - 1.
-            // Scan backward from current position to find the start of previous row spans.
+        // When we enter a new row, update the previous-row window.
+        if (cur.row != last_row) {
+            if (cur.row == last_row + 1) {
+                // Consecutive row: previous row spans are [prev_row_start, prev_row_end).
+                prev_row_start = prev_row_end;
+            } else {
+                // Non-consecutive row (gap): no previous row spans to check.
+                prev_row_start = i;
+            }
+            prev_row_end = i;
+            last_row = cur.row;
         }
 
-        // Simple approach: for each span, scan previous-row spans for adjacency.
-        for (std::size_t j = 0; j < i; ++j) {
+        // Only scan spans from the previous row [prev_row_start, prev_row_end).
+        for (std::size_t j = prev_row_start; j < prev_row_end; ++j) {
             const auto& prev = filtered[j];
-            if (prev.row < cur.row - 1) continue;
-            if (prev.row >= cur.row) break;  // Same row or later.
 
-            // prev is in cur.row - 1.  Check horizontal overlap.
+            // Early exit: if prev starts past our end, no more overlaps possible.
+            if (prev.col_start >= cur.col_end + (connectivity == 8 ? 1 : 0))
+                break;
+
+            // Check horizontal overlap/adjacency.
             bool adjacent;
             if (connectivity == 4) {
-                // 4-connected: spans must overlap horizontally.
                 adjacent = prev.col_start < cur.col_end && prev.col_end > cur.col_start;
             } else {
-                // 8-connected: spans can touch diagonally (expand by 1 pixel).
                 adjacent = prev.col_start < cur.col_end + 1 && prev.col_end > cur.col_start - 1;
             }
 
