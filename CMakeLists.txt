@@ -85,6 +85,11 @@ if(PPP_BUILD_TOOLS)
     add_executable(ppp_jobctl tools/ppp_jobctl.cpp)
     target_link_libraries(ppp_jobctl PRIVATE ppp_core)
     target_compile_features(ppp_jobctl PRIVATE cxx_std_20)
+
+    add_executable(ppp_batch tools/ppp_batch.cpp)
+    target_link_libraries(ppp_batch PRIVATE ppp_core)
+    target_compile_features(ppp_batch PRIVATE cxx_std_20)
+
     if(WIN32)
         add_executable(ppp_jobviewer WIN32 tools/ppp_jobviewer.cpp)
         target_link_libraries(ppp_jobviewer PRIVATE ppp_core)
@@ -101,6 +106,22 @@ if(PPP_BUILD_TESTS)
     target_link_libraries(ppp_core_tests PRIVATE ppp_core)
     target_compile_features(ppp_core_tests PRIVATE cxx_std_20)
     add_test(NAME ppp_core_tests COMMAND ppp_core_tests)
+
+    if(PPP_BUILD_TOOLS)
+        add_executable(ppp_regression_tests
+            tests/regression/regression_tests.cpp
+        )
+        target_link_libraries(ppp_regression_tests PRIVATE ppp_core)
+        target_compile_features(ppp_regression_tests PRIVATE cxx_std_20)
+        target_compile_definitions(ppp_regression_tests PRIVATE
+            PPP_REGRESSION_INPUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test2/in"
+            PPP_BATCH_EXE="$<TARGET_FILE:ppp_batch>"
+            PPP_BASELINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/baselines"
+        )
+        add_dependencies(ppp_regression_tests ppp_batch)
+        add_test(NAME ppp_regression_tests COMMAND ppp_regression_tests)
+        set_tests_properties(ppp_regression_tests PROPERTIES TIMEOUT 600)
+    endif()
 endif()
 
 include(GNUInstallDirs)
@@ -113,7 +134,7 @@ install(TARGETS ppp_core
 )
 
 if(PPP_BUILD_TOOLS)
-    install(TARGETS ppp_jobctl
+    install(TARGETS ppp_jobctl ppp_batch
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
